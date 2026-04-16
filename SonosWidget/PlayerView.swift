@@ -2,7 +2,6 @@ import SwiftUI
 
 struct PlayerView: View {
     @Bindable var manager: SonosManager
-    @State private var showFullPlayer = true
     @State private var newSpeakerIP = ""
     @State private var showManualEntry = false
 
@@ -45,21 +44,7 @@ struct PlayerView: View {
                             }
                         }
                         ToolbarItem(placement: .principal) {
-                            if let source = manager.trackInfo?.source, source != .unknown {
-                                HStack(spacing: 4) {
-                                    Image(systemName: source.iconName)
-                                        .font(.system(size: 13, weight: .semibold))
-                                    Text(source.displayName)
-                                        .font(.system(size: 13, weight: .semibold))
-                                }
-                                .foregroundStyle(.white)
-                                .padding(.horizontal, 10)
-                                .padding(.vertical, 5)
-                                .background(source.badgeColor.opacity(0.85))
-                                .clipShape(Capsule())
-                            } else {
-                                Text("Sonos").fontWeight(.semibold)
-                            }
+                            Text("Sonos").fontWeight(.semibold)
                         }
                         ToolbarItem(placement: .topBarTrailing) {
                             Menu {
@@ -79,25 +64,19 @@ struct PlayerView: View {
                     }
             }
 
-            if !showFullPlayer {
+            if !manager.showFullPlayer {
                 miniPlayerBar
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
-        .overlay {
-            if showFullPlayer {
-                NowPlayingOverlay(manager: manager, isPresented: $showFullPlayer)
-                    .transition(.move(edge: .bottom))
-            }
-        }
-        .animation(.spring(response: 0.4, dampingFraction: 0.85), value: showFullPlayer)
+        .animation(.spring(response: 0.4, dampingFraction: 0.85), value: manager.showFullPlayer)
     }
 
     // MARK: - Mini Player Bar
 
     private var miniPlayerBar: some View {
         Button {
-            showFullPlayer = true
+            manager.showFullPlayer = true
         } label: {
             HStack(spacing: 12) {
                 if let image = manager.albumArtImage {
@@ -179,7 +158,7 @@ struct PlayerView: View {
                     .padding(.horizontal)
                 }
 
-                Spacer(minLength: showFullPlayer ? 20 : 80)
+                Spacer(minLength: manager.showFullPlayer ? 20 : 80)
             }
             .padding(.top, 4)
         }
@@ -194,24 +173,26 @@ struct PlayerView: View {
     }
 
     private func speakerGroupCard(_ group: SpeakerGroupStatus) -> some View {
+        let visibleMembers = group.members.filter { !$0.isInvisible }
         let isCurrentGroup = group.coordinator.id == manager.selectedSpeaker?.id
                 || group.coordinator.groupId == manager.selectedSpeaker?.groupId
+        let accent = manager.groupAlbumColors[group.id] ?? .secondary
 
         return Button {
             if !isCurrentGroup {
                 Task { await manager.selectSpeaker(group.coordinator) }
             }
-            showFullPlayer = true
+            manager.showFullPlayer = true
         } label: {
             VStack(alignment: .leading, spacing: 10) {
                 HStack(spacing: 10) {
-                    Image(systemName: group.members.count > 1 ? "hifispeaker.2.fill" : "hifispeaker.fill")
+                    Image(systemName: visibleMembers.count > 1 ? "hifispeaker.2.fill" : "hifispeaker.fill")
                         .font(.title2)
-                        .foregroundStyle(isCurrentGroup ? .blue : .secondary)
+                        .foregroundStyle(isCurrentGroup ? accent : .secondary)
                         .frame(width: 36)
 
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(group.members.map(\.name).joined(separator: " + "))
+                        Text(visibleMembers.map(\.name).joined(separator: " + "))
                             .font(.subheadline.weight(.semibold))
                             .lineLimit(1)
 
@@ -232,7 +213,7 @@ struct PlayerView: View {
                     if group.transportState == .playing {
                         Image(systemName: "waveform")
                             .font(.caption)
-                            .foregroundStyle(.blue)
+                            .foregroundStyle(accent)
                             .symbolEffect(.variableColor.iterative, isActive: true)
                     } else if group.transportState == .paused {
                         Image(systemName: "pause.fill")
@@ -244,12 +225,12 @@ struct PlayerView: View {
             .padding(14)
             .background {
                 RoundedRectangle(cornerRadius: 14)
-                    .fill(isCurrentGroup ? Color.blue.opacity(0.12) : Color.white.opacity(0.06))
+                    .fill(isCurrentGroup ? accent.opacity(0.12) : Color.white.opacity(0.06))
             }
             .overlay {
                 if isCurrentGroup {
                     RoundedRectangle(cornerRadius: 14)
-                        .strokeBorder(Color.blue.opacity(0.3), lineWidth: 1)
+                        .strokeBorder(accent.opacity(0.3), lineWidth: 1)
                 }
             }
         }
@@ -403,70 +384,81 @@ struct PlayerView: View {
 
 struct NowPlayingOverlay: View {
     @Bindable var manager: SonosManager
-    @Binding var isPresented: Bool
     @State private var volumeSliderValue: Double = 0
     @State private var isDraggingVolume = false
     @State private var scrubPosition: TimeInterval = 0
     @State private var isScrubbing = false
     @State private var dragOffset: CGFloat = 0
 
+    private var artSize: CGFloat {
+        let screen = UIScreen.main.bounds
+        let safeTop: CGFloat = 59
+        let safeBottom: CGFloat = 34
+        let safeH = screen.height - safeTop - safeBottom
+        return min(screen.width - 80, safeH * 0.42)
+    }
+
     var body: some View {
-        GeometryReader { geo in
-            ZStack {
-                artBackground
-                    .ignoresSafeArea()
+        VStack(spacing: 0) {
+            dragHandle
+                .padding(.top, 8)
 
-                VStack(spacing: 0) {
-                    dragHandle
-                        .padding(.top, 12)
+            Spacer(minLength: 8)
 
-                    ScrollView(showsIndicators: false) {
-                        VStack(spacing: 16) {
-                            albumArtView
-                                .padding(.top, 12)
-                            trackInfoView
-                            progressView
-                            audioQualityBadge
-                            playbackControls
-                            volumeControl
-                            speakerButton
-                                .padding(.top, 4)
+            albumArtView(size: artSize)
 
-                            if manager.connectionState == .disconnected, let error = manager.errorMessage {
-                                VStack(spacing: 8) {
-                                    Label(error, systemImage: "wifi.exclamationmark")
-                                        .font(.caption).foregroundStyle(.orange)
-                                    Button("Retry") { Task { await manager.refreshState() } }
-                                        .buttonStyle(.bordered).controlSize(.small)
-                                }
-                                .padding(.top, 4)
-                            }
-                        }
-                        .padding(.horizontal)
-                        .padding(.bottom, 40)
+            trackInfoView
+                .padding(.horizontal, 32)
+                .padding(.top, 20)
+
+            progressView
+                .padding(.top, 16)
+
+            audioQualityBadge
+                .padding(.top, 6)
+
+            playbackControls
+                .padding(.top, 20)
+
+            volumeControl
+                .padding(.top, 20)
+
+            speakerButton
+                .padding(.top, 14)
+
+            Spacer(minLength: 8)
+
+            if manager.connectionState == .disconnected, let error = manager.errorMessage {
+                VStack(spacing: 8) {
+                    Label(error, systemImage: "wifi.exclamationmark")
+                        .font(.caption).foregroundStyle(.orange)
+                    Button("Retry") { Task { await manager.refreshState() } }
+                        .buttonStyle(.bordered).controlSize(.small)
+                }
+                .padding(.bottom, 8)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background { artBackground.ignoresSafeArea() }
+        .offset(y: dragOffset)
+        .gesture(
+            DragGesture()
+                .onChanged { value in
+                    if value.translation.height > 0 {
+                        dragOffset = value.translation.height
                     }
                 }
-            }
-            .offset(y: dragOffset)
-            .gesture(
-                DragGesture()
-                    .onChanged { value in
-                        if value.translation.height > 0 {
-                            dragOffset = value.translation.height
+                .onEnded { value in
+                    if value.translation.height > 120 || value.predictedEndTranslation.height > 300 {
+                        withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
+                            manager.showFullPlayer = false
                         }
                     }
-                    .onEnded { value in
-                        if value.translation.height > 120 || value.predictedEndTranslation.height > 300 {
-                            withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
-                                isPresented = false
-                            }
-                        }
-                        withAnimation(.spring(response: 0.3)) {
-                            dragOffset = 0
-                        }
+                    withAnimation(.spring(response: 0.3)) {
+                        dragOffset = 0
                     }
-            )
-        }
+                }
+        )
         .sheet(isPresented: $manager.showingSpeakerPicker) {
             SpeakerPickerView(manager: manager)
         }
@@ -499,24 +491,31 @@ struct NowPlayingOverlay: View {
                     endPoint: .bottom
                 )
             }
+            .ignoresSafeArea()
         } else {
-            Color.black
+            Color.black.ignoresSafeArea()
         }
     }
 
     // MARK: - Album Art
 
     @ViewBuilder
-    private var albumArtView: some View {
+    private func albumArtView(size: CGFloat) -> some View {
         if let image = manager.albumArtImage {
             Image(uiImage: image)
-                .resizable().aspectRatio(contentMode: .fit)
-                .frame(maxWidth: 300, maxHeight: 300)
+                .resizable().aspectRatio(1, contentMode: .fit)
+                .frame(width: size, height: size)
                 .clipShape(RoundedRectangle(cornerRadius: 16))
                 .shadow(color: .black.opacity(0.3), radius: 20, y: 10)
+                .overlay(alignment: .bottomLeading) {
+                    if let source = manager.trackInfo?.source, source != .unknown {
+                        SourceBadgeView(source: source)
+                            .padding(10)
+                    }
+                }
         } else {
             RoundedRectangle(cornerRadius: 16).fill(.quaternary)
-                .frame(width: 300, height: 300)
+                .frame(width: size, height: size)
                 .overlay {
                     Image(systemName: "music.note").font(.system(size: 60)).foregroundStyle(.tertiary)
                 }
@@ -564,7 +563,7 @@ struct NowPlayingOverlay: View {
             .font(.caption2)
             .foregroundStyle(.white.opacity(0.5))
         }
-        .padding(.horizontal, 20)
+        .padding(.horizontal, 32)
     }
 
     // MARK: - Audio Quality Badge
@@ -596,18 +595,17 @@ struct NowPlayingOverlay: View {
     private var playbackControls: some View {
         HStack(spacing: 40) {
             Button { Task { await manager.previousTrack() } } label: {
-                Image(systemName: "backward.fill").font(.title2)
+                Image(systemName: "backward.fill").font(.system(size: 28))
             }
             Button { Task { await manager.togglePlayPause() } } label: {
                 Image(systemName: manager.isPlaying ? "pause.circle.fill" : "play.circle.fill")
                     .font(.system(size: 56))
             }
             Button { Task { await manager.nextTrack() } } label: {
-                Image(systemName: "forward.fill").font(.title2)
+                Image(systemName: "forward.fill").font(.system(size: 28))
             }
         }
         .foregroundStyle(.white)
-        .padding(.vertical, 4)
     }
 
     // MARK: - Volume
@@ -636,7 +634,7 @@ struct NowPlayingOverlay: View {
                 .font(.caption)
                 .foregroundStyle(.white.opacity(0.4))
         }
-        .padding(.horizontal, 20)
+        .padding(.horizontal, 32)
     }
 
     // MARK: - Speaker Button (AirPlay-style)

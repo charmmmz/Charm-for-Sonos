@@ -19,6 +19,8 @@ final class SonosManager {
     var showingAddSpeaker = false
     var showingQueue = false
     var showingSpeakerPicker = false
+    var showFullPlayer = true
+    var groupAlbumColors: [String: Color] = [:]
 
     var positionSeconds: TimeInterval = 0
     var durationSeconds: TimeInterval = 0
@@ -252,7 +254,7 @@ final class SonosManager {
     var currentGroupMembers: [SonosPlayer] {
         guard let selected = selectedSpeaker else { return [] }
         let groupId = selected.groupId ?? selected.id
-        return allSpeakers.filter { $0.groupId == groupId }
+        return allSpeakers.filter { $0.groupId == groupId && !$0.isInvisible }
     }
 
     func addSpeakerToGroup(_ speaker: SonosPlayer) async {
@@ -273,15 +275,27 @@ final class SonosManager {
         } catch { errorMessage = error.localizedDescription }
     }
 
-    func transferPlayback(to speaker: SonosPlayer) async {
-        guard let current = selectedSpeaker, current.id != speaker.id else { return }
+    func transferPlayback(to target: SonosPlayer) async {
+        guard let current = selectedSpeaker, current.id != target.id else { return }
         do {
-            try await SonosAPI.leaveGroup(speakerIP: speaker.ipAddress)
-            try? await Task.sleep(for: .milliseconds(300))
-            try await SonosAPI.joinGroup(speakerIP: current.ipAddress, coordinatorUUID: speaker.id)
+            let targetAlreadyInGroup = currentGroupMembers.contains { $0.id == target.id }
+
+            if targetAlreadyInGroup {
+                // Target is already in our group — just remove current coordinator
+                // so target becomes the new coordinator and keeps playing.
+                try await SonosAPI.leaveGroup(speakerIP: current.ipAddress)
+            } else {
+                // Target is standalone — add it to our group first, then remove current.
+                try await SonosAPI.joinGroup(speakerIP: target.ipAddress, coordinatorUUID: current.id)
+                try? await Task.sleep(for: .milliseconds(500))
+                try await SonosAPI.leaveGroup(speakerIP: current.ipAddress)
+            }
+
             try? await Task.sleep(for: .milliseconds(500))
             await reloadTopology()
-            if let updated = speakers.first(where: { $0.id == speaker.id }) {
+
+            if let updated = speakers.first(where: { $0.id == target.id })
+                ?? allSpeakers.first(where: { $0.id == target.id }) {
                 await selectSpeaker(updated)
             }
         } catch { errorMessage = error.localizedDescription }
@@ -300,7 +314,7 @@ final class SonosManager {
             let coordinators = fresh.filter(\.isCoordinator)
 
             for coord in coordinators {
-                let members = fresh.filter { $0.groupId == coord.groupId }
+                let members = fresh.filter { $0.groupId == coord.groupId && !$0.isInvisible }
                 do {
                     async let t = SonosAPI.getTransportInfo(ip: coord.ipAddress)
                     async let p = SonosAPI.getPositionInfo(ip: coord.ipAddress)
@@ -320,7 +334,35 @@ final class SonosManager {
                 }
             }
             groupStatuses = statuses
+            await loadGroupAlbumColors()
         } catch { /* keep existing data */ }
+    }
+
+    private func loadGroupAlbumColors() async {
+        for status in groupStatuses {
+            let key = status.id
+            if status.coordinator.id == selectedSpeaker?.id {
+                if let color = albumArtDominantColor { groupAlbumColors[key] = color }
+                continue
+            }
+            guard let urlStr = status.trackInfo?.albumArtURL,
+                  let url = URL(string: urlStr) else {
+                groupAlbumColors[key] = nil
+                continue
+            }
+            if groupAlbumColors[key] != nil,
+               status.trackInfo?.title == groupStatuses.first(where: { $0.id == key })?.trackInfo?.title {
+                continue
+            }
+            do {
+                let (data, _) = try await Self.albumArtSession.data(from: url)
+                if let image = UIImage(data: data), let color = image.dominantColor() {
+                    groupAlbumColors[key] = color
+                }
+            } catch {
+                groupAlbumColors[key] = nil
+            }
+        }
     }
 
     private func reloadTopology() async {
@@ -476,6 +518,10 @@ final class SonosManager {
                 let image = UIImage(data: data)
                 albumArtImage = image
                 albumArtDominantColor = image?.dominantColor()
+                if let color = albumArtDominantColor,
+                   let gid = selectedSpeaker?.groupId ?? selectedSpeaker?.id {
+                    groupAlbumColors[gid] = color
+                }
                 SharedStorage.albumArtData = data
                 SharedStorage.cachedDominantColorHex = image?.dominantColorHex()
             } catch {

@@ -190,7 +190,9 @@ struct SonosWidgetMediumView: View {
                 VStack(alignment: .leading, spacing: 0) {
                     HStack(alignment: .top) {
                         if let name = entry.speakerName {
-                            Text("NOW PLAYING ON \(name.uppercased())")
+                            Text(entry.isPlaying
+                                 ? "NOW PLAYING ON \(name.uppercased())"
+                                 : "CONTINUE ON \(name.uppercased())")
                                 .font(.system(size: 8, weight: .semibold))
                                 .tracking(0.5)
                                 .foregroundStyle(.white.opacity(0.45))

@@ -13,6 +13,14 @@ struct ContentView: View {
             }
         }
         .tabViewStyle(.sidebarAdaptable)
+        .tint(manager.albumArtDominantColor ?? .blue)
+        .overlay {
+            if manager.isConfigured && manager.showFullPlayer {
+                NowPlayingOverlay(manager: manager)
+                    .transition(.move(edge: .bottom))
+            }
+        }
+        .animation(.spring(response: 0.4, dampingFraction: 0.85), value: manager.showFullPlayer)
         .preferredColorScheme(.dark)
     }
 }

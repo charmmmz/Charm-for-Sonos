@@ -355,7 +355,7 @@ enum SonosAPI {
             let groupId = String(xml[idRange])
             let body = String(xml[bodyRange])
 
-            var members: [(uuid: String, name: String, ip: String)] = []
+            var members: [(uuid: String, name: String, ip: String, invisible: Bool)] = []
             var coordIP: String?
 
             let memberPat = "<ZoneGroupMember[^>]*?(?:/>|>)"
@@ -366,8 +366,9 @@ enum SonosAPI {
                 let uuid = attr("UUID", in: tag) ?? UUID().uuidString
                 let name = attr("ZoneName", in: tag) ?? "Unknown"
                 let location = attr("Location", in: tag) ?? ""
+                let invisible = attr("Invisible", in: tag) == "1"
                 if let url = URL(string: location), let host = url.host {
-                    members.append((uuid, name, host))
+                    members.append((uuid, name, host, invisible))
                     if uuid == coordUUID { coordIP = host }
                 }
             }
@@ -377,7 +378,8 @@ enum SonosAPI {
                 players.append(SonosPlayer(
                     id: m.uuid, name: m.name, ipAddress: m.ip,
                     isCoordinator: isCoord, groupId: groupId,
-                    coordinatorIP: isCoord ? nil : coordIP
+                    coordinatorIP: isCoord ? nil : coordIP,
+                    isInvisible: m.invisible
                 ))
             }
         }

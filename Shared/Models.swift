@@ -97,6 +97,7 @@ struct SonosPlayer: Identifiable, Codable, Hashable, Sendable {
     var isCoordinator: Bool
     var groupId: String?
     var coordinatorIP: String?
+    var isInvisible: Bool = false
 
     var playbackIP: String { coordinatorIP ?? ipAddress }
 }
@@ -161,13 +162,21 @@ struct AudioQuality: Codable, Equatable, Sendable {
 
     var isLossless: Bool {
         let c = codec.lowercased()
-        return c.contains("flac") || c.contains("alac") || c.contains("wav")
-            || c.contains("aiff") || c.contains("pcm")
-            || (c.contains("mp4") && (bitDepth ?? 0) >= 24)
+        if c.contains("flac") || c.contains("alac") || c.contains("wav")
+            || c.contains("aiff") || c.contains("pcm") {
+            return true
+        }
+        // MP4/AAC container with explicit bitDepth+sampleRate = ALAC lossless
+        if (c == "aac" || c.contains("mp4") || c.contains("m4a"))
+            && bitDepth != nil && sampleRate != nil {
+            return true
+        }
+        return false
     }
 
     var isHiRes: Bool {
-        (sampleRate ?? 0) > 48000 || ((sampleRate ?? 0) >= 48000 && (bitDepth ?? 0) >= 24)
+        guard isLossless else { return false }
+        return (sampleRate ?? 0) > 48000 || ((sampleRate ?? 0) >= 48000 && (bitDepth ?? 0) >= 24)
     }
 
     nonisolated static func from(protocolInfo: String, sampleRate: String?, bitDepth: String?, channels: String?) -> AudioQuality? {
