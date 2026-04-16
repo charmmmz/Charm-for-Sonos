@@ -7,9 +7,9 @@ final class SonosAuth: NSObject {
     static let shared = SonosAuth()
 
     // ── Configure these after registering at integration.sonos.com ──
-    static var clientID    = ""
-    static var clientSecret = ""
-    static var redirectURI  = ""   // e.g. "https://yourname.github.io/sonos-redirect/callback.html"
+    static var clientID    = "37db4b81-bf96-41b0-8240-6d271fa255c1"
+    static var clientSecret = "7d6f7be8-d8e3-4c51-9281-def62aeba045"
+    static var redirectURI  = "https://charmmmz.github.io/SonosWidget/callback.html"
 
     var isLoggedIn: Bool { readKeychain(.accessToken) != nil }
     var householdId: String? {

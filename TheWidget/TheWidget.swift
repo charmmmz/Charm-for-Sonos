@@ -15,6 +15,7 @@ struct SonosEntry: TimelineEntry {
     let speakerName: String?
     let playbackSource: PlaybackSource
     let dominantColorHex: String?
+    let audioQualityLabel: String?
 
     var dominantColor: Color? { dominantColorHex.flatMap(Color.init(hex:)) }
 
@@ -22,14 +23,16 @@ struct SonosEntry: TimelineEntry {
         SonosEntry(date: .now, trackTitle: "Song Title", artist: "Artist Name",
                    album: "Album", isPlaying: true, albumArtData: nil,
                    isConfigured: true, speakerName: "Living Room",
-                   playbackSource: .unknown, dominantColorHex: nil)
+                   playbackSource: .unknown, dominantColorHex: nil,
+                   audioQualityLabel: "Lossless")
     }
 
     static var unconfigured: SonosEntry {
         SonosEntry(date: .now, trackTitle: "", artist: "", album: "",
                    isPlaying: false, albumArtData: nil,
                    isConfigured: false, speakerName: nil,
-                   playbackSource: .unknown, dominantColorHex: nil)
+                   playbackSource: .unknown, dominantColorHex: nil,
+                   audioQualityLabel: nil)
     }
 }
 
@@ -63,7 +66,8 @@ struct SonosProvider: TimelineProvider {
             isConfigured: true,
             speakerName: SharedStorage.speakerName,
             playbackSource: source,
-            dominantColorHex: SharedStorage.cachedDominantColorHex
+            dominantColorHex: SharedStorage.cachedDominantColorHex,
+            audioQualityLabel: SharedStorage.cachedAudioQualityLabel
         )
     }
 
@@ -97,7 +101,8 @@ struct SonosProvider: TimelineProvider {
                               albumArtData: artData, isConfigured: true,
                               speakerName: SharedStorage.speakerName,
                               playbackSource: info.source,
-                              dominantColorHex: SharedStorage.cachedDominantColorHex)
+                              dominantColorHex: SharedStorage.cachedDominantColorHex,
+                              audioQualityLabel: SharedStorage.cachedAudioQualityLabel)
         } catch {
             return cachedEntry()
         }
@@ -189,14 +194,23 @@ struct SonosWidgetMediumView: View {
 
                 VStack(alignment: .leading, spacing: 0) {
                     HStack(alignment: .top) {
-                        if let name = entry.speakerName {
-                            Text(entry.isPlaying
-                                 ? "NOW PLAYING ON \(name.uppercased())"
-                                 : "CONTINUE ON \(name.uppercased())")
-                                .font(.system(size: 8, weight: .semibold))
-                                .tracking(0.5)
-                                .foregroundStyle(.white.opacity(0.45))
-                                .lineLimit(1)
+                        VStack(alignment: .leading, spacing: 2) {
+                            if let name = entry.speakerName {
+                                Text(entry.isPlaying
+                                     ? "NOW PLAYING ON \(name.uppercased())"
+                                     : "CONTINUE ON \(name.uppercased())")
+                                    .font(.system(size: 8, weight: .semibold))
+                                    .tracking(0.5)
+                                    .foregroundStyle(.white.opacity(0.45))
+                                    .lineLimit(1)
+                            }
+                            if let quality = entry.audioQualityLabel {
+                                Text("IN \(quality.uppercased())")
+                                    .font(.system(size: 7, weight: .bold))
+                                    .tracking(0.8)
+                                    .foregroundStyle(.white.opacity(0.3))
+                                    .lineLimit(1)
+                            }
                         }
                         Spacer(minLength: 4)
                         if entry.playbackSource != .unknown {

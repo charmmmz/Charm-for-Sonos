@@ -30,6 +30,36 @@ enum SonosAPI {
                            body: "<InstanceID>0</InstanceID>")
     }
 
+    nonisolated static func getPlayMode(ip: String) async throws -> (shuffle: Bool, repeat: RepeatMode) {
+        let xml = try await soap(ip: ip, endpoint: avTransport, service: "AVTransport",
+                                 action: "GetTransportSettings", body: "<InstanceID>0</InstanceID>")
+        let raw = extractTag("PlayMode", from: xml) ?? "NORMAL"
+        print("[PlayMode] getPlayMode raw='\(raw)'")
+        switch raw {
+        case "SHUFFLE":              return (true,  .all)
+        case "SHUFFLE_NOREPEAT":     return (true,  .off)
+        case "SHUFFLE_REPEAT_ONE":   return (true,  .one)
+        case "REPEAT_ALL":           return (false, .all)
+        case "REPEAT_ONE":           return (false, .one)
+        default:                     return (false, .off)
+        }
+    }
+
+    nonisolated static func setPlayMode(ip: String, shuffle: Bool, repeat repeatMode: RepeatMode) async throws {
+        let mode: String
+        switch (shuffle, repeatMode) {
+        case (true,  .all): mode = "SHUFFLE"
+        case (true,  .one): mode = "SHUFFLE_REPEAT_ONE"
+        case (true,  .off): mode = "SHUFFLE_NOREPEAT"
+        case (false, .all): mode = "REPEAT_ALL"
+        case (false, .one): mode = "REPEAT_ONE"
+        case (false, .off): mode = "NORMAL"
+        }
+        _ = try await soap(ip: ip, endpoint: avTransport, service: "AVTransport",
+                           action: "SetPlayMode",
+                           body: "<InstanceID>0</InstanceID><NewPlayMode>\(mode)</NewPlayMode>")
+    }
+
     nonisolated static func seek(ip: String, position: String) async throws {
         _ = try await soap(ip: ip, endpoint: avTransport, service: "AVTransport", action: "Seek",
                            body: "<InstanceID>0</InstanceID><Unit>REL_TIME</Unit><Target>\(position)</Target>")

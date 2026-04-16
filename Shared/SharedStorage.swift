@@ -71,6 +71,11 @@ enum SharedStorage {
         set { defaults.set(newValue, forKey: "dominantColorHex") }
     }
 
+    nonisolated static var cachedAudioQualityLabel: String? {
+        get { defaults.string(forKey: "audioQualityLabel") }
+        set { defaults.set(newValue, forKey: "audioQualityLabel") }
+    }
+
     // MARK: - Album Art File
 
     nonisolated static var albumArtData: Data? {

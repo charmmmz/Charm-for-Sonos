@@ -5,7 +5,7 @@ struct ContentView: View {
 
     var body: some View {
         TabView {
-            Tab("Player", systemImage: "play.circle.fill") {
+            Tab("Home", systemImage: "play.circle.fill") {
                 PlayerView(manager: manager)
             }
             Tab("Search", systemImage: "magnifyingglass") {

@@ -25,6 +25,8 @@ final class SonosManager {
 
     var positionSeconds: TimeInterval = 0
     var durationSeconds: TimeInterval = 0
+    var isShuffling: Bool = false
+    var repeatMode: RepeatMode = .off
     var queue: [QueueItem] = []
     var connectionState: ConnectionState = .disconnected
 
@@ -39,6 +41,11 @@ final class SonosManager {
 
     /// Cloud API group ID resolved for the currently selected speaker.
     private var cloudGroupId: String?
+    /// Cached cloud-sourced audio quality keyed by track title to survive UPnP refreshes.
+    private var cachedCloudQuality: (track: String, quality: AudioQuality)?
+    private var isEnrichingQuality = false
+    /// When set, refreshState() will not overwrite isShuffling/repeatMode until this date.
+    private var playModeLockUntil: Date = .distantPast
 
     private static let albumArtSession: URLSession = {
         let config = URLSessionConfiguration.default
@@ -66,6 +73,7 @@ final class SonosManager {
            let speaker = speakers.first(where: { $0.ipAddress == ip }) {
             selectedSpeaker = speaker
             Task {
+                await resolveCloudGroupId()
                 await refreshState()
                 await refreshAllGroupStatuses()
             }
@@ -73,6 +81,7 @@ final class SonosManager {
             selectedSpeaker = first
             syncSpeakerToStorage(first)
             Task {
+                await resolveCloudGroupId()
                 await refreshState()
                 await refreshAllGroupStatuses()
             }
@@ -132,6 +141,7 @@ final class SonosManager {
         trackInfo = nil
         consecutiveFailures = 0
         cloudGroupId = nil
+        cachedCloudQuality = nil
 
         await refreshState()
         await resolveCloudGroupId()
@@ -151,12 +161,17 @@ final class SonosManager {
 
     func togglePlayPause() async {
         guard let ip = playbackIP else { return }
+        let prev = transportState
+        transportState = isPlaying ? .paused : .playing
         do {
-            if isPlaying { try await SonosAPI.pause(ip: ip) }
+            if prev == .playing { try await SonosAPI.pause(ip: ip) }
             else { try await SonosAPI.play(ip: ip) }
             try? await Task.sleep(for: .milliseconds(300))
             await refreshState()
-        } catch { errorMessage = error.localizedDescription }
+        } catch {
+            transportState = prev
+            errorMessage = error.localizedDescription
+        }
     }
 
     func nextTrack() async {
@@ -175,6 +190,38 @@ final class SonosManager {
             try? await Task.sleep(for: .milliseconds(500))
             await refreshState()
         } catch { errorMessage = error.localizedDescription }
+    }
+
+    func toggleShuffle() async {
+        guard let ip = playbackIP else { return }
+        let prev = isShuffling
+        isShuffling = !prev
+        playModeLockUntil = Date().addingTimeInterval(2)
+        do {
+            try await SonosAPI.setPlayMode(ip: ip, shuffle: isShuffling, repeat: repeatMode)
+        } catch {
+            isShuffling = prev
+            playModeLockUntil = .distantPast
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func toggleRepeat() async {
+        guard let ip = playbackIP else { return }
+        let prev = repeatMode
+        switch repeatMode {
+        case .off: repeatMode = .all
+        case .all: repeatMode = .one
+        case .one: repeatMode = .off
+        }
+        playModeLockUntil = Date().addingTimeInterval(2)
+        do {
+            try await SonosAPI.setPlayMode(ip: ip, shuffle: isShuffling, repeat: repeatMode)
+        } catch {
+            repeatMode = prev
+            playModeLockUntil = .distantPast
+            errorMessage = error.localizedDescription
+        }
     }
 
     func seekTo(_ seconds: TimeInterval) async {
@@ -235,6 +282,21 @@ final class SonosManager {
                 await loadQueue()
             } catch { errorMessage = error.localizedDescription }
         }
+    }
+
+    func playQueueItemNext(_ item: QueueItem) async {
+        guard let ip = playbackIP else { return }
+        let currentIndex = queue.firstIndex(where: {
+            $0.title == trackInfo?.title && $0.artist == trackInfo?.artist
+        }) ?? 0
+        let targetPosition = currentIndex + 2 // Sonos uses 1-based, insert after current
+        let sonosFrom = item.trackNumber
+        do {
+            try await SonosAPI.reorderTracksInQueue(ip: ip, startIndex: sonosFrom,
+                                                     numTracks: 1, insertBefore: targetPosition,
+                                                     updateID: queueUpdateID)
+            await loadQueue()
+        } catch { errorMessage = error.localizedDescription }
     }
 
     func playNext(uri: String, metadata: String) async {
@@ -393,12 +455,25 @@ final class SonosManager {
             async let t = SonosAPI.getTransportInfo(ip: pIP)
             async let p = SonosAPI.getPositionInfo(ip: pIP)
             async let v = SonosAPI.getVolume(ip: vIP)
+            async let m = SonosAPI.getPlayMode(ip: pIP)
             transportState = try await t
             trackInfo = try await p
             volume = try await v
+            let mode = try await m
+            if Date() > playModeLockUntil {
+                isShuffling = mode.shuffle
+                repeatMode = mode.repeat
+            }
 
             positionSeconds = trackInfo?.positionSeconds ?? 0
             durationSeconds = trackInfo?.durationSeconds ?? 0
+
+            // Restore cached cloud quality if UPnP didn't provide one and the track matches.
+            if trackInfo?.audioQuality == nil,
+               let cached = cachedCloudQuality,
+               cached.track == trackInfo?.title {
+                trackInfo?.audioQuality = cached.quality
+            }
 
             consecutiveFailures = 0
             connectionState = .connected
@@ -426,33 +501,46 @@ final class SonosManager {
     /// Resolve the cloud group ID by matching the selected speaker's RINCON UUID to cloud players.
     func resolveCloudGroupId() async {
         guard let speaker = selectedSpeaker,
-              let token = await SonosAuth.shared.validAccessToken() else { return }
+              let token = await SonosAuth.shared.validAccessToken() else {
+            print("[SonosCloud] resolveCloudGroupId skipped — speaker: \(selectedSpeaker?.name ?? "nil"), loggedIn: \(SonosAuth.shared.isLoggedIn)")
+            return
+        }
 
         do {
             if SonosAuth.shared.householdId == nil {
                 let households = try await SonosCloudAPI.getHouseholds(token: token)
+                print("[SonosCloud] households: \(households.map { "\($0.id) (\($0.name ?? "?")" })")
                 SonosAuth.shared.householdId = households.first?.id
             }
-            guard let householdId = SonosAuth.shared.householdId else { return }
+            guard let householdId = SonosAuth.shared.householdId else {
+                print("[SonosCloud] no householdId")
+                return
+            }
 
             let response = try await SonosCloudAPI.getGroups(token: token, householdId: householdId)
             let rincon = speaker.id
+            print("[SonosCloud] speaker id: \(rincon), name: \(speaker.name)")
+            print("[SonosCloud] groups: \(response.groups.map { "\($0.id) playerIds=\($0.playerIds)" })")
+            print("[SonosCloud] players: \(response.players.map { "\($0.id) name=\($0.name)" })")
 
             cloudGroupId = response.groups.first(where: { group in
                 group.playerIds.contains(where: { $0.contains(rincon) || rincon.contains($0) })
             })?.id
 
             if cloudGroupId == nil {
-                let speakerIP = speaker.ipAddress
                 cloudGroupId = response.groups.first(where: { group in
                     response.players.filter { group.playerIds.contains($0.id) }
                         .contains(where: { $0.name == speaker.name })
                 })?.id
-                if cloudGroupId == nil {
-                    print("[SonosCloud] Could not match speaker \(speaker.name) (ip: \(speakerIP), id: \(rincon)) to any cloud group")
-                }
+            }
+
+            if let gid = cloudGroupId {
+                print("[SonosCloud] resolved cloudGroupId: \(gid)")
+            } else {
+                print("[SonosCloud] Could not match speaker \(speaker.name) (id: \(rincon)) to any cloud group")
             }
         } catch SonosCloudError.unauthorized {
+            print("[SonosCloud] unauthorized, refreshing token...")
             _ = await SonosAuth.shared.refreshAccessToken()
         } catch {
             print("[SonosCloud] resolveCloudGroupId error: \(error)")
@@ -462,13 +550,27 @@ final class SonosManager {
     /// If UPnP didn't provide audio quality, fetch it from the Sonos Cloud API.
     private func enrichAudioQualityFromCloud() async {
         guard trackInfo?.audioQuality == nil,
-              let groupId = cloudGroupId,
+              !isEnrichingQuality,
+              SonosAuth.shared.isLoggedIn else { return }
+
+        isEnrichingQuality = true
+        defer { isEnrichingQuality = false }
+
+        if cloudGroupId == nil {
+            await resolveCloudGroupId()
+        }
+        guard let groupId = cloudGroupId,
               let token = await SonosAuth.shared.validAccessToken() else { return }
 
         do {
             let metadata = try await SonosCloudAPI.getPlaybackMetadata(token: token, groupId: groupId)
-            if let quality = metadata.currentItem?.track?.quality {
-                trackInfo?.audioQuality = AudioQuality.from(cloudQuality: quality)
+            if let quality = metadata.currentItem?.track?.quality,
+               let mapped = AudioQuality.from(cloudQuality: quality) {
+                trackInfo?.audioQuality = mapped
+                if let title = trackInfo?.title {
+                    cachedCloudQuality = (track: title, quality: mapped)
+                }
+                print("[SonosCloud] quality: \(mapped.label) \(mapped.bitDepth ?? 0)/\(mapped.sampleRate ?? 0)")
             }
         } catch SonosCloudError.unauthorized {
             _ = await SonosAuth.shared.refreshAccessToken()
@@ -477,11 +579,20 @@ final class SonosManager {
         }
     }
 
+    private var groupRefreshCounter = 0
+
     func startAutoRefresh() {
         stopAutoRefresh()
+        groupRefreshCounter = 0
         refreshTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { [weak self] _ in
             guard let self else { return }
-            Task { @MainActor in await self.refreshState() }
+            Task { @MainActor in
+                await self.refreshState()
+                self.groupRefreshCounter += 1
+                if self.groupRefreshCounter % 2 == 0 {
+                    await self.refreshAllGroupStatuses()
+                }
+            }
         }
     }
 
@@ -561,6 +672,7 @@ final class SonosManager {
         SharedStorage.cachedAlbumArtURL = trackInfo?.albumArtURL
         SharedStorage.cachedVolume = volume
         SharedStorage.cachedPlaybackSource = trackInfo?.source.rawValue
+        SharedStorage.cachedAudioQualityLabel = trackInfo?.audioQuality?.label
         WidgetCenter.shared.reloadTimelines(ofKind: "SonosWidget")
     }
 
@@ -570,8 +682,12 @@ final class SonosManager {
         albumArtTask?.cancel()
 
         guard let url = URL(string: urlStr) else {
-            albumArtImage = nil
-            albumArtDominantColor = nil
+            await MainActor.run {
+                withAnimation(.easeInOut(duration: 0.5)) {
+                    albumArtImage = nil
+                    albumArtDominantColor = nil
+                }
+            }
             SharedStorage.albumArtData = nil
             SharedStorage.cachedDominantColorHex = nil
             return
@@ -583,18 +699,27 @@ final class SonosManager {
                 let (data, _) = try await Self.albumArtSession.data(from: url)
                 guard !Task.isCancelled, lastAlbumArtURL == capturedURL else { return }
                 let image = UIImage(data: data)
-                albumArtImage = image
-                albumArtDominantColor = image?.dominantColor()
-                if let gid = selectedSpeaker?.groupId ?? selectedSpeaker?.id {
-                    if let color = albumArtDominantColor { groupAlbumColors[gid] = color }
-                    if let img = image { groupAlbumImages[gid] = img }
+                let dominantColor = image?.dominantColor()
+                await MainActor.run {
+                    withAnimation(.easeInOut(duration: 0.8)) {
+                        albumArtImage = image
+                        albumArtDominantColor = dominantColor
+                        if let gid = selectedSpeaker?.groupId ?? selectedSpeaker?.id {
+                            if let color = dominantColor { groupAlbumColors[gid] = color }
+                            if let img = image { groupAlbumImages[gid] = img }
+                        }
+                    }
                 }
                 SharedStorage.albumArtData = data
                 SharedStorage.cachedDominantColorHex = image?.dominantColorHex()
             } catch {
                 guard !Task.isCancelled else { return }
-                albumArtImage = nil
-                albumArtDominantColor = nil
+                await MainActor.run {
+                    withAnimation(.easeInOut(duration: 0.5)) {
+                        albumArtImage = nil
+                        albumArtDominantColor = nil
+                    }
+                }
             }
         }
         await albumArtTask?.value

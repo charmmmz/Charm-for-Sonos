@@ -2,6 +2,12 @@ import Foundation
 import SwiftUI
 import ActivityKit
 
+// MARK: - Repeat Mode
+
+enum RepeatMode: String, Codable, Sendable {
+    case off, all, one
+}
+
 // MARK: - Playback Source
 
 enum PlaybackSource: String, Codable, Sendable {
@@ -150,19 +156,14 @@ struct AudioQuality: Codable, Equatable, Sendable {
         return codec.uppercased()
     }
 
-    var iconName: String {
-        if codec.lowercased().contains("atmos") || (channels ?? 0) > 2 {
-            return "waveform.circle.fill"
-        }
-        if isLossless || isHiRes {
-            return "waveform.badge.magnifyingglass"
-        }
-        return "waveform"
+    var isAtmos: Bool {
+        codec.lowercased().contains("atmos") || (channels ?? 0) > 2
     }
+
 
     var isLossless: Bool {
         let c = codec.lowercased()
-        if c.contains("flac") || c.contains("alac") || c.contains("wav")
+        if c == "lossless" || c.contains("flac") || c.contains("alac") || c.contains("wav")
             || c.contains("aiff") || c.contains("pcm") {
             return true
         }
@@ -243,20 +244,21 @@ struct AudioQuality: Codable, Equatable, Sendable {
 
     /// Map Sonos Cloud API track quality to our local model.
     nonisolated static func from(cloudQuality q: SonosCloudAPI.CloudTrackQuality) -> AudioQuality? {
-        guard let codec = q.codec, !codec.isEmpty else { return nil }
+        let codec = q.codec?.lowercased() ?? ""
 
         let mappedCodec: String
-        let c = codec.lowercased()
-        if c.contains("dolby") || c.contains("atmos") || c.contains("ac3") || c.contains("ec3") {
-            mappedCodec = "Atmos"
-        } else if q.immersive == true {
+        if q.immersive == true || codec.contains("dolby") || codec.contains("atmos")
+            || codec.contains("ac3") || codec.contains("ec3") {
             mappedCodec = "Atmos"
         } else if q.lossless == true {
-            if c.contains("flac") { mappedCodec = "FLAC" }
-            else if c.contains("alac") { mappedCodec = "ALAC" }
+            if codec.contains("flac") { mappedCodec = "FLAC" }
+            else if codec.contains("alac") { mappedCodec = "ALAC" }
+            else if codec.isEmpty { mappedCodec = "Lossless" }
             else { mappedCodec = codec.uppercased() }
-        } else {
+        } else if !codec.isEmpty {
             mappedCodec = codec.uppercased()
+        } else {
+            return nil
         }
 
         return AudioQuality(

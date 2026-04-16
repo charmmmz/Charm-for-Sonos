@@ -2,7 +2,12 @@ import SwiftUI
 
 struct QueueView: View {
     @Bindable var manager: SonosManager
-    @State private var editMode: EditMode = .inactive
+
+    private var nowPlayingID: String? {
+        manager.queue.first(where: {
+            $0.title == manager.trackInfo?.title && $0.artist == manager.trackInfo?.artist
+        })?.id
+    }
 
     var body: some View {
         NavigationStack {
@@ -12,57 +17,58 @@ struct QueueView: View {
                                            systemImage: "music.note.list",
                                            description: Text("Start playing music on your Sonos speaker."))
                 } else {
-                    List {
-                        ForEach(manager.queue) { item in
-                            queueRow(item)
-                                .contextMenu {
-                                    Button {
-                                        Task { await manager.playTrackInQueue(item) }
-                                    } label: {
-                                        Label("Play Now", systemImage: "play.fill")
+                    ScrollViewReader { proxy in
+                        List {
+                            ForEach(manager.queue) { item in
+                                let isNowPlaying = item.id == nowPlayingID
+
+                                queueRow(item, isNowPlaying: isNowPlaying)
+                                    .id(item.id)
+                                    .swipeActions(edge: .trailing, allowsFullSwipe: !isNowPlaying) {
+                                        if !isNowPlaying {
+                                            Button(role: .destructive) {
+                                                Task { await manager.deleteFromQueue(item: item) }
+                                            } label: {
+                                                Image(systemName: "trash")
+                                            }
+                                        }
                                     }
-                                    Button(role: .destructive) {
-                                        Task { await manager.deleteFromQueue(item: item) }
-                                    } label: {
-                                        Label("Remove from Queue", systemImage: "trash")
+                                    .swipeActions(edge: .leading, allowsFullSwipe: !isNowPlaying) {
+                                        if !isNowPlaying {
+                                            Button {
+                                                Task { await manager.playQueueItemNext(item) }
+                                            } label: {
+                                                Image(systemName: "text.line.first.and.arrowtriangle.forward")
+                                            }
+                                            .tint(.blue)
+                                        }
+                                    }
+                                    .deleteDisabled(isNowPlaying)
+                            }
+                            .onMove { source, destination in
+                                manager.moveQueueItem(from: source, to: destination)
+                            }
+                        }
+                        .listStyle(.plain)
+                        .onAppear {
+                            if let id = nowPlayingID {
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                                    withAnimation {
+                                        proxy.scrollTo(id, anchor: .center)
                                     }
                                 }
-                        }
-                        .onMove { source, destination in
-                            manager.moveQueueItem(from: source, to: destination)
-                        }
-                        .onDelete { indexSet in
-                            guard let idx = indexSet.first else { return }
-                            let item = manager.queue[idx]
-                            Task { await manager.deleteFromQueue(item: item) }
-                        }
-                    }
-                    .listStyle(.plain)
-                    .environment(\.editMode, $editMode)
-                }
-            }
-            .navigationTitle("Queue")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Close") { manager.showingQueue = false }
-                }
-                if !manager.queue.isEmpty {
-                    ToolbarItem(placement: .topBarTrailing) {
-                        Button(editMode == .active ? "Done" : "Edit") {
-                            withAnimation {
-                                editMode = editMode == .active ? .inactive : .active
                             }
                         }
                     }
                 }
             }
+            .navigationTitle("Queue")
+            .navigationBarTitleDisplayMode(.inline)
         }
     }
 
-    private func queueRow(_ item: QueueItem) -> some View {
-        let isNowPlaying = manager.trackInfo?.title == item.title
-            && manager.trackInfo?.artist == item.artist
+    private func queueRow(_ item: QueueItem, isNowPlaying: Bool) -> some View {
+        let accent = manager.albumArtDominantColor ?? .accentColor
 
         return HStack(spacing: 12) {
             AsyncImage(url: URL(string: item.albumArtURL ?? "")) { phase in
@@ -77,9 +83,15 @@ struct QueueView: View {
             .clipShape(RoundedRectangle(cornerRadius: 6))
 
             VStack(alignment: .leading, spacing: 3) {
+                if isNowPlaying {
+                    Text("NOW PLAYING")
+                        .font(.system(size: 9, weight: .bold))
+                        .tracking(0.5)
+                        .foregroundStyle(accent)
+                }
                 Text(item.title)
-                    .font(.subheadline.weight(isNowPlaying ? .bold : .regular))
-                    .foregroundStyle(isNowPlaying ? .blue : .primary)
+                    .font(.subheadline.weight(isNowPlaying ? .semibold : .regular))
+                    .foregroundStyle(.primary)
                     .lineLimit(1)
                 Text(item.artist)
                     .font(.caption)
@@ -88,14 +100,8 @@ struct QueueView: View {
             }
 
             Spacer()
-
-            if isNowPlaying {
-                Image(systemName: "waveform")
-                    .font(.caption)
-                    .foregroundStyle(.blue)
-                    .symbolEffect(.variableColor.iterative, isActive: manager.isPlaying)
-            }
         }
+        .scaleEffect(isNowPlaying ? 1.06 : 1.0, anchor: .leading)
         .contentShape(Rectangle())
         .onTapGesture {
             Task { await manager.playTrackInQueue(item) }

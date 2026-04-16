@@ -39,9 +39,6 @@ struct PlayerView: View {
                     .navigationBarTitleDisplayMode(.inline)
                     .toolbarBackground(.hidden, for: .navigationBar)
                     .toolbar {
-                        ToolbarItem(placement: .principal) {
-                            Text("Sonos").fontWeight(.semibold)
-                        }
                         ToolbarItem(placement: .topBarTrailing) {
                             Menu {
                                 Button { manager.showingAddSpeaker = true } label: {
@@ -83,9 +80,6 @@ struct PlayerView: View {
                             }
                         }
                     }
-                    .sheet(isPresented: $manager.showingQueue) {
-                        QueueView(manager: manager)
-                    }
             }
             .scrollContentBackground(.hidden)
 
@@ -99,17 +93,19 @@ struct PlayerView: View {
 
     private var blurredArtBackground: some View {
         ZStack {
+            Color.black
             if let image = manager.albumArtImage {
                 Image(uiImage: image)
                     .resizable()
                     .aspectRatio(contentMode: .fill)
                     .blur(radius: 80)
                     .scaleEffect(1.5)
+                    .id(manager.trackInfo?.albumArtURL)
+                    .transition(.opacity)
                 Color.black.opacity(0.6)
-            } else {
-                Color.black
             }
         }
+        .animation(.easeInOut(duration: 0.8), value: manager.trackInfo?.albumArtURL)
     }
 
     // MARK: - Mini Player Bar
@@ -172,11 +168,6 @@ struct PlayerView: View {
     private var speakersHomeView: some View {
         ScrollView(.vertical, showsIndicators: false) {
             VStack(alignment: .leading, spacing: 20) {
-                Text("My Speakers")
-                    .font(.title2.bold())
-                    .padding(.horizontal)
-                    .padding(.top, 8)
-
                 if manager.groupStatuses.isEmpty {
                     HStack {
                         Spacer()
@@ -261,16 +252,10 @@ struct PlayerView: View {
 
                 Spacer()
 
-                if group.transportState == .playing {
-                    Image(systemName: "waveform")
-                        .font(.caption)
-                        .foregroundStyle(accent)
-                        .symbolEffect(.variableColor.iterative, isActive: true)
-                } else if group.transportState == .paused {
-                    Image(systemName: "pause.fill")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
+                Image(systemName: "waveform")
+                    .font(.caption)
+                    .foregroundStyle(group.transportState == .playing ? accent : .white.opacity(0.15))
+                    .symbolEffect(.variableColor.iterative, isActive: group.transportState == .playing)
             }
             .padding(14)
             .background {
@@ -488,7 +473,7 @@ struct NowPlayingOverlay: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background { artBackground.ignoresSafeArea() }
         .offset(y: dragOffset)
-        .gesture(
+        .simultaneousGesture(
             DragGesture()
                 .onChanged { value in
                     if value.translation.height > 0 {
@@ -526,50 +511,55 @@ struct NowPlayingOverlay: View {
 
     @ViewBuilder
     private var artBackground: some View {
-        if let image = manager.albumArtImage {
-            ZStack {
+        ZStack {
+            Color.black
+            if let image = manager.albumArtImage {
                 Image(uiImage: image)
                     .resizable()
                     .aspectRatio(contentMode: .fill)
                     .blur(radius: 80)
                     .scaleEffect(1.5)
                     .clipped()
-
+                    .id(manager.trackInfo?.albumArtURL)
+                    .transition(.opacity)
                 LinearGradient(
                     colors: [.black.opacity(0.4), .black.opacity(0.7)],
                     startPoint: .top,
                     endPoint: .bottom
                 )
             }
-            .ignoresSafeArea()
-        } else {
-            Color.black.ignoresSafeArea()
         }
+        .ignoresSafeArea()
+        .animation(.easeInOut(duration: 0.8), value: manager.trackInfo?.albumArtURL)
     }
 
     // MARK: - Album Art
 
     @ViewBuilder
     private func albumArtView(size: CGFloat) -> some View {
-        if let image = manager.albumArtImage {
-            Image(uiImage: image)
-                .resizable().aspectRatio(1, contentMode: .fit)
-                .frame(width: size, height: size)
-                .clipShape(RoundedRectangle(cornerRadius: 16))
-                .shadow(color: .black.opacity(0.3), radius: 20, y: 10)
-                .overlay(alignment: .bottomLeading) {
-                    if let source = manager.trackInfo?.source, source != .unknown {
-                        SourceBadgeView(source: source, tintColor: manager.albumArtDominantColor)
-                            .padding(10)
-                    }
-                }
-        } else {
+        ZStack {
             RoundedRectangle(cornerRadius: 16).fill(.quaternary)
-                .frame(width: size, height: size)
                 .overlay {
                     Image(systemName: "music.note").font(.system(size: 60)).foregroundStyle(.tertiary)
                 }
+
+            if let image = manager.albumArtImage {
+                Image(uiImage: image)
+                    .resizable().aspectRatio(1, contentMode: .fit)
+                    .clipShape(RoundedRectangle(cornerRadius: 16))
+                    .shadow(color: .black.opacity(0.3), radius: 20, y: 10)
+                    .overlay(alignment: .bottomLeading) {
+                        if let source = manager.trackInfo?.source, source != .unknown {
+                            SourceBadgeView(source: source, tintColor: manager.albumArtDominantColor)
+                                .padding(10)
+                        }
+                    }
+                    .id(manager.trackInfo?.albumArtURL)
+                    .transition(.opacity)
+            }
         }
+        .frame(width: size, height: size)
+        .animation(.easeInOut(duration: 0.6), value: manager.trackInfo?.albumArtURL)
     }
 
     // MARK: - Track Info
@@ -610,8 +600,6 @@ struct NowPlayingOverlay: View {
 
                 if let quality = manager.trackInfo?.audioQuality {
                     HStack(spacing: 3) {
-                        Image(systemName: quality.iconName)
-                            .font(.system(size: 9, weight: .semibold))
                         Text(quality.label)
                             .font(.system(size: 9, weight: .semibold))
                         if let sr = quality.sampleRate, let bd = quality.bitDepth {
@@ -641,19 +629,58 @@ struct NowPlayingOverlay: View {
     // MARK: - Playback Controls
 
     private var playbackControls: some View {
-        HStack(spacing: 40) {
+        HStack(spacing: 0) {
+            // Shuffle
+            Button { Task { await manager.toggleShuffle() } } label: {
+                let accent = manager.albumArtDominantColor ?? .white
+                Image(systemName: "shuffle")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(manager.isShuffling ? .white : .white.opacity(0.45))
+                    .frame(width: 38, height: 38)
+                    .background(manager.isShuffling ? accent.opacity(0.85) : Color.clear,
+                                in: Circle())
+            }
+            .buttonStyle(.plain)
+
+            Spacer()
+
+            // Previous
             Button { Task { await manager.previousTrack() } } label: {
-                Image(systemName: "backward.fill").font(.system(size: 28))
+                Image(systemName: "backward.fill").font(.system(size: 26))
             }
+
+            Spacer()
+
+            // Play / Pause (no circle)
             Button { Task { await manager.togglePlayPause() } } label: {
-                Image(systemName: manager.isPlaying ? "pause.circle.fill" : "play.circle.fill")
-                    .font(.system(size: 56))
+                Image(systemName: manager.isPlaying ? "pause.fill" : "play.fill")
+                    .font(.system(size: 44))
+                    .frame(width: 60, height: 60)
             }
+
+            Spacer()
+
+            // Next
             Button { Task { await manager.nextTrack() } } label: {
-                Image(systemName: "forward.fill").font(.system(size: 28))
+                Image(systemName: "forward.fill").font(.system(size: 26))
             }
+
+            Spacer()
+
+            // Repeat
+            Button { Task { await manager.toggleRepeat() } } label: {
+                let accent = manager.albumArtDominantColor ?? .white
+                Image(systemName: manager.repeatMode == .one ? "repeat.1" : "repeat")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(manager.repeatMode != .off ? .white : .white.opacity(0.45))
+                    .frame(width: 38, height: 38)
+                    .background(manager.repeatMode != .off ? accent.opacity(0.85) : Color.clear,
+                                in: Circle())
+            }
+            .buttonStyle(.plain)
         }
         .foregroundStyle(.white)
+        .padding(.horizontal, 32)
     }
 
     // MARK: - Volume
