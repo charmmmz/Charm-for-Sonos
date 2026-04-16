@@ -18,7 +18,6 @@ struct ContentView: View {
                     setupView
                 }
             }
-            .navigationTitle("Sonos")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 if manager.isConfigured {
@@ -28,6 +27,23 @@ struct ContentView: View {
                             Task { await manager.loadQueue() }
                         } label: {
                             Image(systemName: "list.bullet")
+                        }
+                    }
+                    ToolbarItem(placement: .principal) {
+                        if let source = manager.trackInfo?.source, source != .unknown {
+                            HStack(spacing: 4) {
+                                Image(systemName: source.iconName)
+                                    .font(.system(size: 13, weight: .semibold))
+                                Text(source.displayName)
+                                    .font(.system(size: 13, weight: .semibold))
+                            }
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 5)
+                            .background(source.badgeColor.opacity(0.85))
+                            .clipShape(Capsule())
+                        } else {
+                            Text("Sonos").fontWeight(.semibold)
                         }
                     }
                     ToolbarItem(placement: .topBarTrailing) {
@@ -41,6 +57,10 @@ struct ContentView: View {
                         } label: {
                             Image(systemName: "ellipsis.circle")
                         }
+                    }
+                } else {
+                    ToolbarItem(placement: .principal) {
+                        Text("Sonos").fontWeight(.semibold)
                     }
                 }
             }
@@ -285,7 +305,13 @@ struct ContentView: View {
 
     private var volumeControl: some View {
         HStack(spacing: 12) {
-            Image(systemName: "speaker.fill").font(.caption).foregroundStyle(.secondary)
+            Button {
+                Task { await manager.updateVolume(max(0, manager.volume - 2)) }
+            } label: {
+                Image(systemName: "speaker.minus.fill").font(.callout).foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+
             Slider(
                 value: Binding(
                     get: { isDraggingVolume ? volumeSliderValue : Double(manager.volume) },
@@ -298,7 +324,13 @@ struct ContentView: View {
                     Task { await manager.updateVolume(Int(volumeSliderValue)) }
                 }
             }
-            Image(systemName: "speaker.wave.3.fill").font(.caption).foregroundStyle(.secondary)
+
+            Button {
+                Task { await manager.updateVolume(min(100, manager.volume + 2)) }
+            } label: {
+                Image(systemName: "speaker.plus.fill").font(.callout).foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
         }
         .padding(.horizontal, 20)
     }

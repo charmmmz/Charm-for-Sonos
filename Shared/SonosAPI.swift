@@ -50,6 +50,7 @@ enum SonosAPI {
 
         let duration = extractTag("TrackDuration", from: xml)
         let position = extractTag("RelTime", from: xml)
+        let trackURI = extractTag("TrackURI", from: xml) ?? ""
 
         var title = "Unknown"
         var artist = "Unknown"
@@ -70,8 +71,11 @@ enum SonosAPI {
             }
         }
 
+        let source = PlaybackSource.from(trackURI: decodeXMLEntities(trackURI))
+
         return TrackInfo(title: title, artist: artist, album: album,
-                         albumArtURL: albumArtURL, duration: duration, position: position)
+                         albumArtURL: albumArtURL, duration: duration, position: position,
+                         source: source)
     }
 
     // MARK: - Volume

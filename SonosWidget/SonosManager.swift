@@ -13,6 +13,7 @@ final class SonosManager {
     var isLoading = false
     var errorMessage: String?
     var albumArtImage: UIImage?
+    var albumArtDominantColor: Color?
     var showingAddSpeaker = false
     var showingQueue = false
 
@@ -296,6 +297,7 @@ final class SonosManager {
         SharedStorage.cachedAlbum = trackInfo?.album
         SharedStorage.cachedAlbumArtURL = trackInfo?.albumArtURL
         SharedStorage.cachedVolume = volume
+        SharedStorage.cachedPlaybackSource = trackInfo?.source.rawValue
         WidgetCenter.shared.reloadTimelines(ofKind: "SonosWidget")
     }
 
@@ -306,7 +308,9 @@ final class SonosManager {
 
         guard let url = URL(string: urlStr) else {
             albumArtImage = nil
+            albumArtDominantColor = nil
             SharedStorage.albumArtData = nil
+            SharedStorage.cachedDominantColorHex = nil
             return
         }
 
@@ -315,11 +319,15 @@ final class SonosManager {
             do {
                 let (data, _) = try await Self.albumArtSession.data(from: url)
                 guard !Task.isCancelled, lastAlbumArtURL == capturedURL else { return }
-                albumArtImage = UIImage(data: data)
+                let image = UIImage(data: data)
+                albumArtImage = image
+                albumArtDominantColor = image?.dominantColor()
                 SharedStorage.albumArtData = data
+                SharedStorage.cachedDominantColorHex = image?.dominantColorHex()
             } catch {
                 guard !Task.isCancelled else { return }
                 albumArtImage = nil
+                albumArtDominantColor = nil
             }
         }
         await albumArtTask?.value

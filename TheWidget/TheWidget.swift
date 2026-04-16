@@ -13,17 +13,23 @@ struct SonosEntry: TimelineEntry {
     let albumArtData: Data?
     let isConfigured: Bool
     let speakerName: String?
+    let playbackSource: PlaybackSource
+    let dominantColorHex: String?
+
+    var dominantColor: Color? { dominantColorHex.flatMap(Color.init(hex:)) }
 
     static var placeholder: SonosEntry {
         SonosEntry(date: .now, trackTitle: "Song Title", artist: "Artist Name",
                    album: "Album", isPlaying: true, albumArtData: nil,
-                   isConfigured: true, speakerName: "Living Room")
+                   isConfigured: true, speakerName: "Living Room",
+                   playbackSource: .unknown, dominantColorHex: nil)
     }
 
     static var unconfigured: SonosEntry {
         SonosEntry(date: .now, trackTitle: "", artist: "", album: "",
                    isPlaying: false, albumArtData: nil,
-                   isConfigured: false, speakerName: nil)
+                   isConfigured: false, speakerName: nil,
+                   playbackSource: .unknown, dominantColorHex: nil)
     }
 }
 
@@ -46,6 +52,7 @@ struct SonosProvider: TimelineProvider {
 
     private func cachedEntry() -> SonosEntry {
         guard SharedStorage.speakerIP != nil else { return .unconfigured }
+        let source = SharedStorage.cachedPlaybackSource.flatMap(PlaybackSource.init(rawValue:)) ?? .unknown
         return SonosEntry(
             date: .now,
             trackTitle: SharedStorage.cachedTrackTitle ?? "Not Playing",
@@ -54,7 +61,9 @@ struct SonosProvider: TimelineProvider {
             isPlaying: SharedStorage.isPlaying,
             albumArtData: SharedStorage.albumArtData,
             isConfigured: true,
-            speakerName: SharedStorage.speakerName
+            speakerName: SharedStorage.speakerName,
+            playbackSource: source,
+            dominantColorHex: SharedStorage.cachedDominantColorHex
         )
     }
 
@@ -71,6 +80,7 @@ struct SonosProvider: TimelineProvider {
             SharedStorage.cachedArtist = info.artist
             SharedStorage.cachedAlbum = info.album
             SharedStorage.cachedAlbumArtURL = info.albumArtURL
+            SharedStorage.cachedPlaybackSource = info.source.rawValue
 
             var artData = SharedStorage.albumArtData
             if let urlStr = info.albumArtURL, let url = URL(string: urlStr) {
@@ -85,7 +95,9 @@ struct SonosProvider: TimelineProvider {
             return SonosEntry(date: .now, trackTitle: info.title, artist: info.artist,
                               album: info.album, isPlaying: state == .playing,
                               albumArtData: artData, isConfigured: true,
-                              speakerName: SharedStorage.speakerName)
+                              speakerName: SharedStorage.speakerName,
+                              playbackSource: info.source,
+                              dominantColorHex: SharedStorage.cachedDominantColorHex)
         } catch {
             return cachedEntry()
         }
@@ -105,11 +117,10 @@ struct SonosWidgetSmallView: View {
                 HStack(spacing: 6) {
                     artThumb(size: 44)
                     Spacer()
-                    if let name = entry.speakerName {
-                        Text(name)
-                            .font(.caption2)
-                            .foregroundStyle(.white.opacity(0.6))
-                            .lineLimit(1)
+                    if entry.playbackSource != .unknown {
+                        SourceBadgeView(source: entry.playbackSource,
+                                        tintColor: entry.dominantColor,
+                                        compact: true)
                     }
                 }
 
@@ -176,18 +187,31 @@ struct SonosWidgetMediumView: View {
             HStack(spacing: 12) {
                 albumArt
 
-                VStack(alignment: .leading, spacing: 3) {
-                    if let name = entry.speakerName {
-                        Text(name).font(.caption2).foregroundStyle(.white.opacity(0.6))
+                VStack(alignment: .leading, spacing: 0) {
+                    HStack(alignment: .top) {
+                        if let name = entry.speakerName {
+                            Text("NOW PLAYING ON \(name.uppercased())")
+                                .font(.system(size: 8, weight: .semibold))
+                                .tracking(0.5)
+                                .foregroundStyle(.white.opacity(0.45))
+                                .lineLimit(1)
+                        }
+                        Spacer(minLength: 4)
+                        if entry.playbackSource != .unknown {
+                            SourceBadgeView(source: entry.playbackSource,
+                                            tintColor: entry.dominantColor,
+                                            compact: true)
+                        }
                     }
 
-                    Spacer()
+                    Spacer(minLength: 6)
 
                     Text(entry.trackTitle).font(.subheadline.bold()).foregroundStyle(.white).lineLimit(2)
                     Text(entry.artist).font(.caption).foregroundStyle(.white.opacity(0.7)).lineLimit(1)
-                    Text(entry.album).font(.caption2).foregroundStyle(.white.opacity(0.5)).lineLimit(1)
+                        .padding(.top, 1)
+                    Text(entry.album).font(.caption2).foregroundStyle(.white.opacity(0.45)).lineLimit(1)
 
-                    Spacer()
+                    Spacer(minLength: 6)
 
                     HStack(spacing: 12) {
                         Button(intent: VolumeDownIntent()) {
@@ -215,8 +239,6 @@ struct SonosWidgetMediumView: View {
                     }
                     .foregroundStyle(.white)
                 }
-
-                Spacer(minLength: 0)
             }
         }
     }

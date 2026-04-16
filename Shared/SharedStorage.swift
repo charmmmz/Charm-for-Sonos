@@ -61,6 +61,16 @@ enum SharedStorage {
         set { defaults.set(newValue, forKey: "volume") }
     }
 
+    nonisolated static var cachedPlaybackSource: String? {
+        get { defaults.string(forKey: "playbackSource") }
+        set { defaults.set(newValue, forKey: "playbackSource") }
+    }
+
+    nonisolated static var cachedDominantColorHex: String? {
+        get { defaults.string(forKey: "dominantColorHex") }
+        set { defaults.set(newValue, forKey: "dominantColorHex") }
+    }
+
     // MARK: - Album Art File
 
     nonisolated static var albumArtData: Data? {
