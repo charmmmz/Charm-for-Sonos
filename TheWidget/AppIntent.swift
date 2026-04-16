@@ -20,6 +20,9 @@ struct PlayPauseIntent: AppIntent {
             SharedStorage.isPlaying = true
         }
 
+        // Lock play state for 5s so fetchLiveEntry won't overwrite our optimistic update
+        // with a potentially stale device response.
+        SharedStorage.playStateLockUntil = Date().addingTimeInterval(5)
         WidgetCenter.shared.reloadTimelines(ofKind: "SonosWidget")
         return .result()
     }
@@ -32,7 +35,10 @@ struct NextTrackIntent: AppIntent {
     func perform() async throws -> some IntentResult {
         guard let ip = SharedStorage.coordinatorIP ?? SharedStorage.speakerIP else { return .result() }
         try? await SonosAPI.next(ip: ip)
-        try? await Task.sleep(for: .milliseconds(500))
+        // Lock the current play state during track transition so the widget doesn't
+        // flicker while the device is in TRANSITIONING state.
+        SharedStorage.playStateLockUntil = Date().addingTimeInterval(5)
+        try? await Task.sleep(for: .milliseconds(800))
         await IntentHelper.refreshCache(playbackIP: ip)
         WidgetCenter.shared.reloadTimelines(ofKind: "SonosWidget")
         return .result()
@@ -46,7 +52,8 @@ struct PreviousTrackIntent: AppIntent {
     func perform() async throws -> some IntentResult {
         guard let ip = SharedStorage.coordinatorIP ?? SharedStorage.speakerIP else { return .result() }
         try? await SonosAPI.previous(ip: ip)
-        try? await Task.sleep(for: .milliseconds(500))
+        SharedStorage.playStateLockUntil = Date().addingTimeInterval(5)
+        try? await Task.sleep(for: .milliseconds(800))
         await IntentHelper.refreshCache(playbackIP: ip)
         WidgetCenter.shared.reloadTimelines(ofKind: "SonosWidget")
         return .result()
@@ -94,6 +101,8 @@ enum IntentHelper {
             SharedStorage.cachedArtist = info.artist
             SharedStorage.cachedAlbum = info.album
             SharedStorage.cachedAlbumArtURL = info.albumArtURL
+            SharedStorage.cachedAudioQualityLabel = info.audioQuality?.label
+            SharedStorage.cachedPlaybackSource = info.source.rawValue
 
             if let urlStr = info.albumArtURL, let url = URL(string: urlStr),
                let (data, _) = try? await URLSession.shared.data(from: url) {

@@ -76,6 +76,44 @@ enum SharedStorage {
         set { defaults.set(newValue, forKey: "audioQualityLabel") }
     }
 
+    /// Timestamp after which fetchLiveEntry may overwrite isPlaying from the device.
+    /// Set by PlayPauseIntent to prevent the live fetch from reverting the optimistic update.
+    nonisolated static var playStateLockUntil: Date {
+        get {
+            let ts = defaults.double(forKey: "playStateLockUntil")
+            return ts == 0 ? .distantPast : Date(timeIntervalSince1970: ts)
+        }
+        set { defaults.set(newValue.timeIntervalSince1970, forKey: "playStateLockUntil") }
+    }
+
+    // MARK: - Sonos Cloud API (shared with widget extension)
+
+    /// OAuth access token — mirrored here so widget extension can call Cloud API without Keychain sharing.
+    nonisolated static var cloudAccessToken: String? {
+        get { defaults.string(forKey: "cloudAccessToken") }
+        set { defaults.set(newValue, forKey: "cloudAccessToken") }
+    }
+
+    nonisolated static var cloudTokenExpiry: Date {
+        get {
+            let ts = defaults.double(forKey: "cloudTokenExpiry")
+            return ts == 0 ? .distantPast : Date(timeIntervalSince1970: ts)
+        }
+        set { defaults.set(newValue.timeIntervalSince1970, forKey: "cloudTokenExpiry") }
+    }
+
+    /// Cloud group ID for the currently selected speaker's group.
+    nonisolated static var cloudGroupId: String? {
+        get { defaults.string(forKey: "cloudGroupId") }
+        set { defaults.set(newValue, forKey: "cloudGroupId") }
+    }
+
+    /// Total visible speakers in the currently playing group (including coordinator).
+    nonisolated static var cachedGroupMemberCount: Int {
+        get { defaults.integer(forKey: "groupMemberCount") }
+        set { defaults.set(newValue, forKey: "groupMemberCount") }
+    }
+
     // MARK: - Album Art File
 
     nonisolated static var albumArtData: Data? {

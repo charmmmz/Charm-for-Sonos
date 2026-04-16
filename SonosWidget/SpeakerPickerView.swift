@@ -7,8 +7,10 @@ struct SpeakerPickerView: View {
 
     private var visibleSpeakers: [SonosPlayer] {
         var seen = Set<String>()
-        return manager.allSpeakers
-            .filter { !$0.isInvisible && seen.insert($0.id).inserted }
+        let all = manager.allSpeakers.filter { !$0.isInvisible && seen.insert($0.id).inserted }
+        // Coordinator always first, then members sorted by name.
+        let coordID = manager.selectedSpeaker?.id
+        return all.sorted { a, _ in a.id == coordID }
     }
 
     private var currentGroupId: String? {

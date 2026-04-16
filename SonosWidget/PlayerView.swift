@@ -222,29 +222,25 @@ struct PlayerView: View {
                         }
                     }
                     .padding(.horizontal)
-
-                    // Separate-group drop zone — always visible but subtle,
-                    // brightens when a card is dragged over it.
-                    separateDropZone
-                        .dropDestination(for: String.self) { items, _ in
-                            guard let groupID = items.first else { return false }
-                            Task { await manager.separateGroup(groupID: groupID) }
-                            return true
-                        } isTargeted: { targeted in
-                            withAnimation(.easeInOut(duration: 0.15)) {
-                                isSeparateZoneTargeted = targeted
-                            }
-                        }
-                        .padding(.horizontal)
-                        .padding(.top, 4)
                 }
 
                 Spacer(minLength: manager.showFullPlayer ? 20 : 80)
             }
             .padding(.top, 4)
         }
-        .refreshable {
-            await manager.refreshAllGroupStatuses()
+        .overlay(alignment: .bottomTrailing) {
+            ungroupZone
+                .dropDestination(for: String.self) { items, _ in
+                    guard let groupID = items.first else { return false }
+                    Task { await manager.separateGroup(groupID: groupID) }
+                    return true
+                } isTargeted: { targeted in
+                    withAnimation(.spring(response: 0.25, dampingFraction: 0.7)) {
+                        isSeparateZoneTargeted = targeted
+                    }
+                }
+                .padding(.trailing, 20)
+                .padding(.bottom, manager.showFullPlayer ? 20 : 76)
         }
         .onAppear {
             manager.startAutoRefresh()
@@ -253,32 +249,35 @@ struct PlayerView: View {
         .onDisappear { manager.stopAutoRefresh() }
     }
 
-    private var separateDropZone: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "rectangle.2.swap")
-            Text("Separate Group")
-        }
-        .font(.subheadline.weight(.medium))
-        .foregroundStyle(isSeparateZoneTargeted ? .white : .white.opacity(0.25))
-        .frame(maxWidth: .infinity)
-        .frame(height: 48)
-        .background {
-            RoundedRectangle(cornerRadius: 14)
-                .strokeBorder(
-                    isSeparateZoneTargeted ? .white.opacity(0.7) : .white.opacity(0.15),
-                    style: StrokeStyle(lineWidth: 1.5, dash: isSeparateZoneTargeted ? [] : [6, 4])
-                )
-            if isSeparateZoneTargeted {
-                RoundedRectangle(cornerRadius: 14)
-                    .fill(.white.opacity(0.06))
+    private var ungroupZone: some View {
+        VStack(spacing: 5) {
+            ZStack {
+                Circle()
+                    .fill(isSeparateZoneTargeted ? Color.red.opacity(0.85) : Color.white.opacity(0.08))
+                Circle()
+                    .strokeBorder(
+                        isSeparateZoneTargeted ? Color.red : Color.white.opacity(0.2),
+                        lineWidth: 1.5
+                    )
+                Image(systemName: "minus")
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundStyle(isSeparateZoneTargeted ? .white : .white.opacity(0.35))
             }
+            .frame(width: 52, height: 52)
+            .scaleEffect(isSeparateZoneTargeted ? 1.15 : 1.0)
+
+            Text("UNGROUP")
+                .font(.system(size: 8, weight: .bold))
+                .tracking(0.6)
+                .foregroundStyle(isSeparateZoneTargeted ? .red : .white.opacity(0.25))
         }
-        .scaleEffect(isSeparateZoneTargeted ? 1.02 : 1.0)
     }
 
     @ViewBuilder
     private func dragPreview(_ group: SpeakerGroupStatus) -> some View {
-        let visibleMembers = group.members.filter { !$0.isInvisible }
+        let visibleMembers = group.members
+            .filter { !$0.isInvisible }
+            .sorted { a, _ in a.id == group.coordinator.id }
         let accent = manager.groupAlbumColors[group.id] ?? .secondary
 
         HStack(spacing: 10) {
@@ -304,7 +303,9 @@ struct PlayerView: View {
     }
 
     private func speakerGroupCard(_ group: SpeakerGroupStatus) -> some View {
-        let visibleMembers = group.members.filter { !$0.isInvisible }
+        let visibleMembers = group.members
+            .filter { !$0.isInvisible }
+            .sorted { a, _ in a.id == group.coordinator.id }
         let isCurrentGroup = group.coordinator.id == manager.selectedSpeaker?.id
                 || group.coordinator.groupId == manager.selectedSpeaker?.groupId
         let accent = manager.groupAlbumColors[group.id] ?? .secondary

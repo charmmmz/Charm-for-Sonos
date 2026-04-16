@@ -35,6 +35,7 @@ final class SonosManager {
     private var refreshTimer: Timer?
     private var positionTimer: Timer?
     private var lastAlbumArtURL: String?
+    private var lastWidgetTrackTitle: String?
     private var consecutiveFailures = 0
     private var currentActivity: Activity<SonosActivityAttributes>?
     private var albumArtTask: Task<Void, Never>?
@@ -699,6 +700,7 @@ final class SonosManager {
 
             if let gid = cloudGroupId {
                 print("[SonosCloud] resolved cloudGroupId: \(gid)")
+                SharedStorage.cloudGroupId = gid
             } else {
                 print("[SonosCloud] Could not match speaker \(speaker.name) (id: \(rincon)) to any cloud group")
             }
@@ -827,6 +829,9 @@ final class SonosManager {
     }
 
     private func updateSharedCache() {
+        let currentTitle = trackInfo?.title
+        let trackChanged = currentTitle != lastWidgetTrackTitle
+
         SharedStorage.isPlaying = isPlaying
         SharedStorage.cachedTrackTitle = trackInfo?.title
         SharedStorage.cachedArtist = trackInfo?.artist
@@ -835,7 +840,15 @@ final class SonosManager {
         SharedStorage.cachedVolume = volume
         SharedStorage.cachedPlaybackSource = trackInfo?.source.rawValue
         SharedStorage.cachedAudioQualityLabel = trackInfo?.audioQuality?.label
-        WidgetCenter.shared.reloadTimelines(ofKind: "SonosWidget")
+        SharedStorage.cachedGroupMemberCount = currentGroupMembers.filter { !$0.isInvisible }.count
+        // Keep cloudGroupId in sync so the widget can call Cloud API independently.
+        if let gid = cloudGroupId { SharedStorage.cloudGroupId = gid }
+
+        // Reload widget only when something meaningful changed (track, play state).
+        if trackChanged || isPlaying != SharedStorage.isPlaying {
+            lastWidgetTrackTitle = currentTitle
+            WidgetCenter.shared.reloadTimelines(ofKind: "SonosWidget")
+        }
     }
 
     private func loadAlbumArt() async {

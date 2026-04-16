@@ -1,6 +1,7 @@
 import AppIntents
 import WidgetKit
 import SwiftUI
+import UIKit
 
 // MARK: - Timeline Entry
 
@@ -13,6 +14,7 @@ struct SonosEntry: TimelineEntry {
     let albumArtData: Data?
     let isConfigured: Bool
     let speakerName: String?
+    let groupMemberCount: Int
     let playbackSource: PlaybackSource
     let dominantColorHex: String?
     let audioQualityLabel: String?
@@ -22,7 +24,7 @@ struct SonosEntry: TimelineEntry {
     static var placeholder: SonosEntry {
         SonosEntry(date: .now, trackTitle: "Song Title", artist: "Artist Name",
                    album: "Album", isPlaying: true, albumArtData: nil,
-                   isConfigured: true, speakerName: "Living Room",
+                   isConfigured: true, speakerName: "Living Room", groupMemberCount: 1,
                    playbackSource: .unknown, dominantColorHex: nil,
                    audioQualityLabel: "Lossless")
     }
@@ -30,7 +32,7 @@ struct SonosEntry: TimelineEntry {
     static var unconfigured: SonosEntry {
         SonosEntry(date: .now, trackTitle: "", artist: "", album: "",
                    isPlaying: false, albumArtData: nil,
-                   isConfigured: false, speakerName: nil,
+                   isConfigured: false, speakerName: nil, groupMemberCount: 1,
                    playbackSource: .unknown, dominantColorHex: nil,
                    audioQualityLabel: nil)
     }
@@ -48,7 +50,7 @@ struct SonosProvider: TimelineProvider {
     func getTimeline(in context: Context, completion: @escaping (Timeline<SonosEntry>) -> Void) {
         Task {
             let entry = await fetchLiveEntry()
-            let next = Calendar.current.date(byAdding: .minute, value: 5, to: .now)!
+            let next = Calendar.current.date(byAdding: .minute, value: 2, to: .now)!
             completion(Timeline(entries: [entry], policy: .after(next)))
         }
     }
@@ -65,6 +67,7 @@ struct SonosProvider: TimelineProvider {
             albumArtData: SharedStorage.albumArtData,
             isConfigured: true,
             speakerName: SharedStorage.speakerName,
+            groupMemberCount: SharedStorage.cachedGroupMemberCount,
             playbackSource: source,
             dominantColorHex: SharedStorage.cachedDominantColorHex,
             audioQualityLabel: SharedStorage.cachedAudioQualityLabel
@@ -76,16 +79,23 @@ struct SonosProvider: TimelineProvider {
         guard let ip = playIP else { return .unconfigured }
 
         do {
-            let state = try await SonosAPI.getTransportInfo(ip: ip)
-            let info = try await SonosAPI.getPositionInfo(ip: ip)
+            async let stateTask = SonosAPI.getTransportInfo(ip: ip)
+            async let infoTask = SonosAPI.getPositionInfo(ip: ip)
+            let state = try await stateTask
+            let info = try await infoTask
 
-            SharedStorage.isPlaying = (state == .playing)
+            // Only overwrite isPlaying if no intent recently set it (prevents flicker).
+            if Date() > SharedStorage.playStateLockUntil {
+                SharedStorage.isPlaying = (state == .playing)
+            }
+            let isPlaying = SharedStorage.isPlaying
             SharedStorage.cachedTrackTitle = info.title
             SharedStorage.cachedArtist = info.artist
             SharedStorage.cachedAlbum = info.album
             SharedStorage.cachedAlbumArtURL = info.albumArtURL
             SharedStorage.cachedPlaybackSource = info.source.rawValue
 
+            // Album art — extract dominant color if track changed.
             var artData = SharedStorage.albumArtData
             if let urlStr = info.albumArtURL, let url = URL(string: urlStr) {
                 var req = URLRequest(url: url, timeoutInterval: 5)
@@ -93,16 +103,34 @@ struct SonosProvider: TimelineProvider {
                 if let (data, _) = try? await URLSession.shared.data(for: req) {
                     artData = data
                     SharedStorage.albumArtData = data
+                    if let uiImage = UIImage(data: data) {
+                        SharedStorage.cachedDominantColorHex = uiImage.dominantColorHex()
+                    }
+                }
+            }
+
+            // Audio quality — try Cloud API if UPnP didn't provide codec info.
+            var audioQualityLabel = info.audioQuality?.label ?? SharedStorage.cachedAudioQualityLabel
+            if info.audioQuality == nil,
+               let groupId = SharedStorage.cloudGroupId,
+               let token = SharedStorage.cloudAccessToken,
+               Date() < SharedStorage.cloudTokenExpiry {
+                if let metadata = try? await SonosCloudAPI.getPlaybackMetadata(token: token, groupId: groupId),
+                   let quality = metadata.currentItem?.track?.quality,
+                   let mapped = AudioQuality.from(cloudQuality: quality) {
+                    audioQualityLabel = mapped.label
+                    SharedStorage.cachedAudioQualityLabel = mapped.label
                 }
             }
 
             return SonosEntry(date: .now, trackTitle: info.title, artist: info.artist,
-                              album: info.album, isPlaying: state == .playing,
+                              album: info.album, isPlaying: isPlaying,
                               albumArtData: artData, isConfigured: true,
                               speakerName: SharedStorage.speakerName,
+                              groupMemberCount: SharedStorage.cachedGroupMemberCount,
                               playbackSource: info.source,
                               dominantColorHex: SharedStorage.cachedDominantColorHex,
-                              audioQualityLabel: SharedStorage.cachedAudioQualityLabel)
+                              audioQualityLabel: audioQualityLabel)
         } catch {
             return cachedEntry()
         }
@@ -196,9 +224,11 @@ struct SonosWidgetMediumView: View {
                     HStack(alignment: .top) {
                         VStack(alignment: .leading, spacing: 2) {
                             if let name = entry.speakerName {
+                                let extra = entry.groupMemberCount > 1
+                                    ? " + \(entry.groupMemberCount - 1)" : ""
                                 Text(entry.isPlaying
-                                     ? "NOW PLAYING ON \(name.uppercased())"
-                                     : "CONTINUE ON \(name.uppercased())")
+                                     ? "NOW PLAYING ON \(name.uppercased())\(extra)"
+                                     : "CONTINUE ON \(name.uppercased())\(extra)")
                                     .font(.system(size: 8, weight: .semibold))
                                     .tracking(0.5)
                                     .foregroundStyle(.white.opacity(0.45))

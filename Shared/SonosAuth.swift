@@ -117,6 +117,9 @@ final class SonosAuth: NSObject {
             saveKeychain(.refreshToken, json.refresh_token)
             let expiry = Date().addingTimeInterval(TimeInterval(json.expires_in - 60))
             saveKeychain(.tokenExpiry, expiry.timeIntervalSince1970.description)
+            // Mirror token to SharedStorage so widget extension can access it.
+            SharedStorage.cloudAccessToken = json.access_token
+            SharedStorage.cloudTokenExpiry = expiry
             return true
         } catch {
             print("[SonosAuth] token request failed: \(error)")
@@ -132,6 +135,9 @@ final class SonosAuth: NSObject {
         if let expiryStr = readKeychain(.tokenExpiry),
            let expiry = Double(expiryStr),
            Date().timeIntervalSince1970 < expiry {
+            // Mirror to SharedStorage every time so the widget extension always has a fresh copy.
+            SharedStorage.cloudAccessToken = token
+            SharedStorage.cloudTokenExpiry = Date(timeIntervalSince1970: expiry)
             return token
         }
 

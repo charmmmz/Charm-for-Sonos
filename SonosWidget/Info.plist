@@ -13,6 +13,10 @@
 			<string>com.charm.SonosWidget.oauth</string>
 		</dict>
 	</array>
+	<key>BGTaskSchedulerPermittedIdentifiers</key>
+	<array>
+		<string>com.charm.SonosWidget.refresh</string>
+	</array>
 	<key>CADisableMinimumFrameDurationOnPhone</key>
 	<true/>
 	<key>NSLocalNetworkUsageDescription</key>
