@@ -165,6 +165,9 @@ struct PlayerView: View {
 
     // MARK: - Speakers Home View
 
+    @State private var dropTargetGroupID: String?
+    @State private var isSeparateZoneTargeted = false
+
     private var speakersHomeView: some View {
         ScrollView(.vertical, showsIndicators: false) {
             VStack(alignment: .leading, spacing: 20) {
@@ -183,10 +186,57 @@ struct PlayerView: View {
                 } else {
                     LazyVStack(spacing: 12) {
                         ForEach(manager.groupStatuses) { group in
+                            let isDropTarget = dropTargetGroupID == group.id
+                            let dropAccent = manager.groupAlbumColors[group.id]
+                                ?? manager.albumArtDominantColor
+                                ?? .accentColor
+
                             speakerGroupCard(group)
+                                // Drag source: carry the group ID as a String.
+                                .draggable(group.id) {
+                                    dragPreview(group)
+                                }
+                                // Drop target: receive another group's ID.
+                                .dropDestination(for: String.self) { items, _ in
+                                    guard let sourceID = items.first,
+                                          sourceID != group.id else { return false }
+                                    Task { await manager.mergeGroups(sourceGroupID: sourceID,
+                                                                     intoGroupID: group.id) }
+                                    return true
+                                } isTargeted: { targeted in
+                                    withAnimation(.easeInOut(duration: 0.15)) {
+                                        dropTargetGroupID = targeted ? group.id : nil
+                                    }
+                                }
+                                // Highlight drop target with an animated border.
+                                .overlay {
+                                    if isDropTarget {
+                                        RoundedRectangle(cornerRadius: 14)
+                                            .strokeBorder(dropAccent.opacity(0.8), lineWidth: 2)
+                                            .transition(.opacity)
+                                    }
+                                }
+                                .scaleEffect(isDropTarget ? 1.02 : 1.0)
+                                .animation(.spring(response: 0.25, dampingFraction: 0.7),
+                                           value: isDropTarget)
                         }
                     }
                     .padding(.horizontal)
+
+                    // Separate-group drop zone — always visible but subtle,
+                    // brightens when a card is dragged over it.
+                    separateDropZone
+                        .dropDestination(for: String.self) { items, _ in
+                            guard let groupID = items.first else { return false }
+                            Task { await manager.separateGroup(groupID: groupID) }
+                            return true
+                        } isTargeted: { targeted in
+                            withAnimation(.easeInOut(duration: 0.15)) {
+                                isSeparateZoneTargeted = targeted
+                            }
+                        }
+                        .padding(.horizontal)
+                        .padding(.top, 4)
                 }
 
                 Spacer(minLength: manager.showFullPlayer ? 20 : 80)
@@ -201,6 +251,56 @@ struct PlayerView: View {
             Task { await manager.refreshAllGroupStatuses() }
         }
         .onDisappear { manager.stopAutoRefresh() }
+    }
+
+    private var separateDropZone: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "rectangle.2.swap")
+            Text("Separate Group")
+        }
+        .font(.subheadline.weight(.medium))
+        .foregroundStyle(isSeparateZoneTargeted ? .white : .white.opacity(0.25))
+        .frame(maxWidth: .infinity)
+        .frame(height: 48)
+        .background {
+            RoundedRectangle(cornerRadius: 14)
+                .strokeBorder(
+                    isSeparateZoneTargeted ? .white.opacity(0.7) : .white.opacity(0.15),
+                    style: StrokeStyle(lineWidth: 1.5, dash: isSeparateZoneTargeted ? [] : [6, 4])
+                )
+            if isSeparateZoneTargeted {
+                RoundedRectangle(cornerRadius: 14)
+                    .fill(.white.opacity(0.06))
+            }
+        }
+        .scaleEffect(isSeparateZoneTargeted ? 1.02 : 1.0)
+    }
+
+    @ViewBuilder
+    private func dragPreview(_ group: SpeakerGroupStatus) -> some View {
+        let visibleMembers = group.members.filter { !$0.isInvisible }
+        let accent = manager.groupAlbumColors[group.id] ?? .secondary
+
+        HStack(spacing: 10) {
+            if let img = manager.groupAlbumImages[group.id] {
+                Image(uiImage: img)
+                    .resizable().aspectRatio(contentMode: .fill)
+                    .frame(width: 36, height: 36)
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+            } else {
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(.white.opacity(0.15))
+                    .frame(width: 36, height: 36)
+                    .overlay { Image(systemName: "hifispeaker.fill").font(.caption).foregroundStyle(.secondary) }
+            }
+            Text(visibleMembers.map(\.name).joined(separator: " + "))
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.white)
+                .lineLimit(1)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(accent.opacity(0.85), in: RoundedRectangle(cornerRadius: 12))
     }
 
     private func speakerGroupCard(_ group: SpeakerGroupStatus) -> some View {

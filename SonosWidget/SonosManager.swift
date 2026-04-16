@@ -142,6 +142,11 @@ final class SonosManager {
         consecutiveFailures = 0
         cloudGroupId = nil
         cachedCloudQuality = nil
+        prefetchTask?.cancel()
+        prefetchTask = nil
+        queueArtCache.removeAllObjects()
+        cachedArtURLs = []
+        dominantColorCache = [:]
 
         await refreshState()
         await resolveCloudGroupId()
@@ -242,7 +247,27 @@ final class SonosManager {
     }
 
     var queueUpdateID: String = "0"
+    /// Observable set of URLs whose images have been persisted to disk (survives NSCache eviction).
+    private(set) var cachedArtURLs: Set<String> = []
+
+    /// Returns the cached image for a queue item URL, checking memory then disk.
+    /// Falls back gracefully if NSCache evicted the image while the view re-renders.
+    func queueImage(for urlStr: String) -> UIImage? {
+        if let img = queueArtCache.object(forKey: urlStr as NSString) { return img }
+        // NSCache evicted it — restore from disk (local flash, ~0.1 ms, safe on main thread).
+        return QueueArtDiskCache.shared.image(for: urlStr)
+    }
+    /// NSCache stores the actual UIImages; auto-evicts under memory pressure, capped at 150 images (~30 MB).
+    let queueArtCache: NSCache<NSString, UIImage> = {
+        let c = NSCache<NSString, UIImage>()
+        c.countLimit = 150
+        c.totalCostLimit = 30 * 1024 * 1024
+        return c
+    }()
+    /// Dominant color cache keyed by album art URL — avoids re-computing per-pixel analysis on every track change.
+    private var dominantColorCache: [String: Color] = [:]
     private var queueLoaded = false
+    private var prefetchTask: Task<Void, Never>?
 
     // MARK: - Queue
 
@@ -253,8 +278,99 @@ final class SonosManager {
             queue = result.items
             queueUpdateID = result.updateID
             queueLoaded = true
+            schedulePrefetch()
         } catch {
             if queue.isEmpty { errorMessage = error.localizedDescription }
+        }
+    }
+
+    private func schedulePrefetch() {
+        prefetchTask?.cancel()
+
+        // Build fetch order: start from now-playing, go forward, then wrap to beginning.
+        let nowIndex = queue.firstIndex(where: {
+            $0.title == trackInfo?.title && $0.artist == trackInfo?.artist
+        }) ?? 0
+        let reordered = Array(queue[nowIndex...]) + Array(queue[..<nowIndex])
+
+        var seen = Set<String>()
+        let ordered = reordered.compactMap { $0.albumArtURL }
+            .filter { !cachedArtURLs.contains($0) && seen.insert($0).inserted }
+        guard !ordered.isEmpty else { return }
+
+        let diskCache = QueueArtDiskCache.shared
+        prefetchTask = Task(priority: .utility) { [weak self] in
+            guard let self else { return }
+            await withTaskGroup(of: Void.self) { group in
+                let maxConcurrent = 3
+                var index = 0
+
+                func addNext() {
+                    guard index < ordered.count else { return }
+                    let urlStr = ordered[index]
+                    index += 1
+                    group.addTask { [weak self] in
+                        guard let self, !Task.isCancelled else { return }
+                        await self.fetchArtForURL(urlStr, diskCache: diskCache)
+                    }
+                }
+
+                for _ in 0..<min(maxConcurrent, ordered.count) { addNext() }
+                for await _ in group { addNext() }
+            }
+        }
+    }
+
+    private func fetchArtForURL(_ urlStr: String, diskCache: QueueArtDiskCache) async {
+        guard !cachedArtURLs.contains(urlStr) else { return }
+
+        // L2: disk cache.
+        // L3: network. Always capture raw data so we can populate sibling disk slots.
+        let imageData: Data
+        if let d = diskCache.data(for: urlStr) {
+            imageData = d
+        } else {
+            guard let url = URL(string: urlStr),
+                  let (downloaded, _) = try? await Self.albumArtSession.data(from: url) else { return }
+            imageData = downloaded
+            diskCache.store(imageData, for: urlStr)
+        }
+        guard let image = UIImage(data: imageData) else { return }
+        let color = dominantColorCache[urlStr] ?? image.dominantColor()
+
+        // Collect all other uncached URLs from the same album so one download
+        // populates every track's cache entry simultaneously.
+        let albumKey = queue.first(where: { $0.albumArtURL == urlStr })
+            .map { "\($0.album)||||\($0.artist)" }
+        var siblings: [String] = []
+        if let key = albumKey {
+            var seen = Set<String>()
+            siblings = queue.compactMap { item -> String? in
+                guard let u = item.albumArtURL,
+                      u != urlStr,
+                      !cachedArtURLs.contains(u),
+                      "\(item.album)||||\(item.artist)" == key,
+                      seen.insert(u).inserted else { return nil }
+                return u
+            }
+        }
+
+        // Write primary URL to memory cache.
+        queueArtCache.setObject(image, forKey: urlStr as NSString, cost: imageData.count)
+        // Write all sibling URLs to memory + disk cache.
+        for sibling in siblings {
+            queueArtCache.setObject(image, forKey: sibling as NSString, cost: imageData.count)
+            if !diskCache.contains(sibling) { diskCache.store(imageData, for: sibling) }
+        }
+
+        await MainActor.run { [weak self] in
+            guard let self else { return }
+            self.dominantColorCache[urlStr] = color
+            self.cachedArtURLs.insert(urlStr)
+            for sibling in siblings {
+                self.dominantColorCache[sibling] = color
+                self.cachedArtURLs.insert(sibling)
+            }
         }
     }
 
@@ -343,6 +459,51 @@ final class SonosManager {
         } catch { errorMessage = error.localizedDescription }
     }
 
+    /// Separates every non-coordinator member of the group, leaving each speaker standalone.
+    func separateGroup(groupID: String) async {
+        guard let source = groupStatuses.first(where: { $0.id == groupID }) else { return }
+        let nonCoordinators = source.members.filter { $0.id != source.coordinator.id }
+        guard !nonCoordinators.isEmpty else { return }
+
+        isLoading = true
+        defer { isLoading = false }
+
+        for member in nonCoordinators {
+            do {
+                try await SonosAPI.leaveGroup(speakerIP: member.ipAddress)
+                try? await Task.sleep(for: .milliseconds(300))
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+        }
+
+        await reloadTopology()
+        await refreshAllGroupStatuses()
+    }
+
+    /// Merges every member of `sourceGroupID` into `targetGroupID`.
+    func mergeGroups(sourceGroupID: String, intoGroupID: String) async {
+        guard sourceGroupID != intoGroupID,
+              let target = groupStatuses.first(where: { $0.id == intoGroupID }),
+              let source = groupStatuses.first(where: { $0.id == sourceGroupID }) else { return }
+
+        isLoading = true
+        defer { isLoading = false }
+
+        for member in source.members {
+            do {
+                try await SonosAPI.joinGroup(speakerIP: member.ipAddress,
+                                             coordinatorUUID: target.coordinator.id)
+                try? await Task.sleep(for: .milliseconds(300))
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+        }
+
+        await reloadTopology()
+        await refreshAllGroupStatuses()
+    }
+
     func transferPlayback(to target: SonosPlayer) async {
         guard let current = selectedSpeaker, current.id != target.id else { return }
         do {
@@ -428,7 +589,9 @@ final class SonosManager {
                 let (data, _) = try await Self.albumArtSession.data(from: url)
                 if let image = UIImage(data: data) {
                     groupAlbumImages[key] = image
-                    groupAlbumColors[key] = image.dominantColor()
+                    let color = dominantColorCache[urlStr] ?? image.dominantColor()
+                    dominantColorCache[urlStr] = color
+                    groupAlbumColors[key] = color
                 }
             } catch {
                 groupAlbumColors[key] = nil
@@ -570,7 +733,6 @@ final class SonosManager {
                 if let title = trackInfo?.title {
                     cachedCloudQuality = (track: title, quality: mapped)
                 }
-                print("[SonosCloud] quality: \(mapped.label) \(mapped.bitDepth ?? 0)/\(mapped.sampleRate ?? 0)")
             }
         } catch SonosCloudError.unauthorized {
             _ = await SonosAuth.shared.refreshAccessToken()
@@ -695,18 +857,67 @@ final class SonosManager {
 
         let capturedURL = urlStr
         albumArtTask = Task {
+            // Fast path: image already in memory cache.
+            if let cached = self.queueArtCache.object(forKey: urlStr as NSString) {
+                let color = self.dominantColorCache[urlStr] ?? cached.dominantColor()
+                // Keep disk entry warm so LRU eviction doesn't drop the current song's art.
+                QueueArtDiskCache.shared.touch(urlStr)
+                await MainActor.run {
+                    withAnimation(.easeInOut(duration: 0.8)) {
+                        self.albumArtImage = cached
+                        self.albumArtDominantColor = color
+                        self.dominantColorCache[urlStr] = color
+                        if let gid = self.selectedSpeaker?.groupId ?? self.selectedSpeaker?.id {
+                            self.groupAlbumColors[gid] = color
+                            self.groupAlbumImages[gid] = cached
+                        }
+                    }
+                }
+                if let data = cached.jpegData(compressionQuality: 0.9) {
+                    SharedStorage.albumArtData = data
+                }
+                SharedStorage.cachedDominantColorHex = cached.dominantColorHex()
+                return
+            }
+
+            // L2: check disk cache before hitting the network.
+            if let cached = QueueArtDiskCache.shared.image(for: urlStr) {
+                let color = self.dominantColorCache[urlStr] ?? cached.dominantColor()
+                self.queueArtCache.setObject(cached, forKey: urlStr as NSString,
+                                             cost: Int(cached.size.width * cached.size.height * 4))
+                await MainActor.run {
+                    withAnimation(.easeInOut(duration: 0.8)) {
+                        self.albumArtImage = cached
+                        self.albumArtDominantColor = color
+                        self.dominantColorCache[urlStr] = color
+                        if let gid = self.selectedSpeaker?.groupId ?? self.selectedSpeaker?.id {
+                            self.groupAlbumColors[gid] = color
+                            self.groupAlbumImages[gid] = cached
+                        }
+                    }
+                }
+                if let data = cached.jpegData(compressionQuality: 0.9) {
+                    SharedStorage.albumArtData = data
+                }
+                SharedStorage.cachedDominantColorHex = cached.dominantColorHex()
+                return
+            }
+
+            // Slow path: download from network.
             do {
                 let (data, _) = try await Self.albumArtSession.data(from: url)
                 guard !Task.isCancelled, lastAlbumArtURL == capturedURL else { return }
                 let image = UIImage(data: data)
-                let dominantColor = image?.dominantColor()
+                let dominantColor = self.dominantColorCache[urlStr] ?? image?.dominantColor()
+                if let image { QueueArtDiskCache.shared.store(data, for: urlStr) }
                 await MainActor.run {
                     withAnimation(.easeInOut(duration: 0.8)) {
-                        albumArtImage = image
-                        albumArtDominantColor = dominantColor
-                        if let gid = selectedSpeaker?.groupId ?? selectedSpeaker?.id {
-                            if let color = dominantColor { groupAlbumColors[gid] = color }
-                            if let img = image { groupAlbumImages[gid] = img }
+                        self.albumArtImage = image
+                        self.albumArtDominantColor = dominantColor
+                        if let color = dominantColor { self.dominantColorCache[urlStr] = color }
+                        if let gid = self.selectedSpeaker?.groupId ?? self.selectedSpeaker?.id {
+                            if let color = dominantColor { self.groupAlbumColors[gid] = color }
+                            if let img = image { self.groupAlbumImages[gid] = img }
                         }
                     }
                 }
@@ -716,8 +927,8 @@ final class SonosManager {
                 guard !Task.isCancelled else { return }
                 await MainActor.run {
                     withAnimation(.easeInOut(duration: 0.5)) {
-                        albumArtImage = nil
-                        albumArtDominantColor = nil
+                        self.albumArtImage = nil
+                        self.albumArtDominantColor = nil
                     }
                 }
             }

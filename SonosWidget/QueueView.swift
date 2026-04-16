@@ -71,9 +71,12 @@ struct QueueView: View {
         let accent = manager.albumArtDominantColor ?? .accentColor
 
         return HStack(spacing: 12) {
-            AsyncImage(url: URL(string: item.albumArtURL ?? "")) { phase in
-                if let img = phase.image {
-                    img.resizable().aspectRatio(contentMode: .fill)
+            Group {
+                if let urlStr = item.albumArtURL,
+                   manager.cachedArtURLs.contains(urlStr),
+                   let cached = manager.queueImage(for: urlStr) {
+                    Image(uiImage: cached)
+                        .resizable().aspectRatio(contentMode: .fill)
                 } else {
                     Rectangle().fill(.quaternary)
                         .overlay { Image(systemName: "music.note").font(.caption2).foregroundStyle(.tertiary) }

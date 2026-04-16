@@ -34,7 +34,6 @@ enum SonosAPI {
         let xml = try await soap(ip: ip, endpoint: avTransport, service: "AVTransport",
                                  action: "GetTransportSettings", body: "<InstanceID>0</InstanceID>")
         let raw = extractTag("PlayMode", from: xml) ?? "NORMAL"
-        print("[PlayMode] getPlayMode raw='\(raw)'")
         switch raw {
         case "SHUFFLE":              return (true,  .all)
         case "SHUFFLE_NOREPEAT":     return (true,  .off)

@@ -21,6 +21,8 @@ struct SpeakerPickerView: View {
         return speaker.groupId == gid
     }
 
+    private var accent: Color { manager.albumArtDominantColor ?? .accentColor }
+
     var body: some View {
         NavigationStack {
             List {
@@ -36,14 +38,10 @@ struct SpeakerPickerView: View {
             }
             .navigationTitle("Speakers")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") { dismiss() }
-                }
-            }
         }
         .presentationDetents([.medium, .large])
         .presentationDragIndicator(.visible)
+        .tint(accent)
     }
 
     private func speakerRow(_ speaker: SonosPlayer) -> some View {
@@ -61,14 +59,14 @@ struct SpeakerPickerView: View {
                     } else {
                         Image(systemName: inGroup ? "checkmark.circle.fill" : "circle")
                             .font(.title3)
-                            .foregroundStyle(inGroup ? .blue : .secondary)
+                            .foregroundStyle(inGroup ? accent : .secondary)
                     }
                 }
                 .frame(width: 28)
 
                 Image(systemName: "hifispeaker.fill")
                     .font(.title3)
-                    .foregroundStyle(inGroup ? .blue : .primary)
+                    .foregroundStyle(inGroup ? accent : .primary)
                     .frame(width: 28)
 
                 VStack(alignment: .leading, spacing: 2) {
