@@ -338,6 +338,10 @@ struct SonosActivityAttributes: ActivityAttributes {
         /// Album art compressed to ≤15KB thumbnail, embedded directly so the Live Activity
         /// renderer (separate process) doesn't need to hit UserDefaults / app group.
         var albumArtThumbnail: Data?
+        /// Number of speakers in the current group (1 = standalone).
+        var groupMemberCount: Int = 1
+        /// PlaybackSource raw value for displaying streaming service badge.
+        var playbackSourceRaw: String? = nil
     }
     var speakerName: String
 }

@@ -112,7 +112,9 @@ struct PlayerView: View {
 
     private var miniPlayerBar: some View {
         Button {
-            manager.showFullPlayer = true
+            withAnimation(.spring(response: 0.4, dampingFraction: 0.85)) {
+                manager.showFullPlayer = true
+            }
         } label: {
             HStack(spacing: 12) {
                 if let image = manager.albumArtImage {
@@ -820,7 +822,15 @@ struct NowPlayingOverlay: View {
                 portraitLayout(geo: geo)
             }
         }
-        .background { artBackground.ignoresSafeArea() }
+        .background { artBackground }
+        .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .padding(.horizontal, 6)
+        .padding(.top, 4)
+        .offset(y: dragDownOffset)
+        .ignoresSafeArea(edges: .bottom)
+        .onChange(of: manager.showFullPlayer) { _, isOpen in
+            if !isOpen { dragDownOffset = 0 }
+        }
         .sheet(isPresented: $manager.showingSpeakerPicker) {
             SpeakerPickerView(manager: manager)
         }
@@ -832,107 +842,132 @@ struct NowPlayingOverlay: View {
     // MARK: - Portrait Layout
 
     private func portraitLayout(geo: GeometryProxy) -> some View {
-        let artSz = min(geo.size.width - 80, geo.size.height * 0.42)
+        let h = geo.size.height
+        let artSz = min(geo.size.width - 64, h * 0.45)
+        let s = h / 760
 
         return VStack(spacing: 0) {
             dragHandle
                 .padding(.top, 8)
-                .frame(maxWidth: .infinity)
-                .contentShape(Rectangle())
-                .gesture(dismissDragGesture)
-
-            Spacer(minLength: 8)
+                .padding(.bottom, 10 * s)
 
             albumArtView(size: artSz)
-                .contentShape(Rectangle())
-                .gesture(dismissDragGesture)
 
             trackInfoView
                 .padding(.horizontal, 32)
-                .padding(.top, 20)
-                .frame(maxWidth: .infinity)
-                .contentShape(Rectangle())
-                .gesture(dismissDragGesture)
+                .padding(.top, 22 * s)
 
             progressView
-                .padding(.top, 16)
+                .padding(.top, 18 * s)
 
             playbackControls
-                .padding(.top, 20)
+                .padding(.top, 22 * s)
 
             volumeControl
-                .padding(.top, 20)
+                .padding(.top, 22 * s)
 
             bottomActions(showQueue: true)
-                .padding(.top, 14)
+                .padding(.top, 16 * s)
 
-            Spacer(minLength: 8)
+            Spacer(minLength: 0)
+                .frame(maxHeight: 20 * s)
 
             errorBanner
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .offset(y: dragDownOffset)
+        .contentShape(Rectangle())
+        .simultaneousGesture(dismissDragGesture)
     }
 
     // MARK: - Landscape Layout (player left | queue right)
 
     private func landscapeLayout(geo: GeometryProxy) -> some View {
         let leftW = geo.size.width * 0.55
+        let topPad: CGFloat = 12
         let fixedBelow: CGFloat = 196
-        let topPad:     CGFloat = 12
         let artSz = max(80, min(leftW * 0.38, geo.size.height - topPad - fixedBelow))
 
-        return VStack(spacing: 0) {
-            Spacer(minLength: topPad)
+        return HStack(spacing: 0) {
+            // ── Left panel: player (gesture lives here to avoid QueueView List interference) ──
+            VStack(spacing: 0) {
+                dragHandle
+                    .padding(.top, 10)
 
-            // ── Drag-safe zone (no child DragGestures) ──
-            HStack(alignment: .center, spacing: 16) {
-                albumArtView(size: artSz)
+                Spacer(minLength: topPad)
 
-                VStack(alignment: .leading) {
-                    Spacer(minLength: 0)
-                    Text(manager.trackInfo?.title ?? "Not Playing")
-                        .font(.title3.bold())
-                        .foregroundStyle(.white)
-                        .lineLimit(2)
-                    Text(manager.trackInfo?.artist ?? "—")
-                        .font(.body)
-                        .foregroundStyle(.white.opacity(0.7))
-                        .lineLimit(1)
-                        .padding(.top, 3)
-                    Text(manager.trackInfo?.album ?? "")
-                        .font(.subheadline)
-                        .foregroundStyle(.white.opacity(0.45))
-                        .lineLimit(1)
-                        .padding(.top, 1)
-                    Spacer(minLength: 0)
+                HStack(alignment: .center, spacing: 16) {
+                    albumArtView(size: artSz)
+
+                    VStack(alignment: .leading) {
+                        Spacer(minLength: 0)
+                        Text(manager.trackInfo?.title ?? "Not Playing")
+                            .font(.title3.bold())
+                            .foregroundStyle(.white)
+                            .lineLimit(2)
+                        Text(manager.trackInfo?.artist ?? "—")
+                            .font(.body)
+                            .foregroundStyle(.white.opacity(0.7))
+                            .lineLimit(1)
+                            .padding(.top, 3)
+                        Text(manager.trackInfo?.album ?? "")
+                            .font(.subheadline)
+                            .foregroundStyle(.white.opacity(0.45))
+                            .lineLimit(1)
+                            .padding(.top, 1)
+                        Spacer(minLength: 0)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: artSz, alignment: .leading)
                 }
-                .frame(maxWidth: .infinity, maxHeight: artSz, alignment: .leading)
-            }
-            .padding(.horizontal, 20)
-            .contentShape(Rectangle())
-            .gesture(dismissDragGesture)
-
-            // ── Controls zone ──
-            progressContent
                 .padding(.horizontal, 20)
-                .padding(.top, 14)
 
-            playbackControls.padding(.top, 10)
-            volumeControl.padding(.top, 6)
-            bottomActions(showQueue: true).padding(.top, 6)
+                progressContent
+                    .padding(.horizontal, 20)
+                    .padding(.top, 14)
 
-            Spacer(minLength: 0)
-            errorBanner
+                playbackControls.padding(.top, 10)
+                volumeControl.padding(.top, 6)
+                bottomActions(showQueue: false).padding(.top, 6)
+
+                Spacer(minLength: 0)
+                errorBanner
+            }
+            .frame(width: leftW)
+            .contentShape(Rectangle())
+            .simultaneousGesture(dismissDragGesture)
+
+            Rectangle()
+                .fill(.white.opacity(0.12))
+                .frame(width: 0.5)
+
+            // ── Right panel: queue ──
+            VStack(spacing: 0) {
+                Text("QUEUE")
+                    .font(.system(size: 11, weight: .bold))
+                    .tracking(1)
+                    .foregroundStyle(.white.opacity(0.45))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 16)
+                    .padding(.top, 14)
+                    .padding(.bottom, 4)
+
+                QueueView(manager: manager, showNavigation: false)
+            }
+            .frame(maxWidth: .infinity)
+            .onAppear {
+                if manager.queue.isEmpty {
+                    Task { await manager.loadQueue() }
+                }
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .offset(y: dragDownOffset)
     }
 
     // MARK: - Dismiss Drag Gesture
 
+    /// Global coordinate space: offset is at body level (outside clipShape/padding),
+    /// gestures are attached inside layouts — global coords keep translation stable.
     private var dismissDragGesture: some Gesture {
-        DragGesture()
+        DragGesture(coordinateSpace: .global)
             .onChanged { v in
                 if v.translation.height > 0 {
                     dragDownOffset = v.translation.height

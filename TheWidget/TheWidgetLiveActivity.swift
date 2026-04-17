@@ -10,58 +10,75 @@ struct SonosLiveActivity: Widget {
         } dynamicIsland: { context in
             DynamicIsland {
                 DynamicIslandExpandedRegion(.leading) {
-                    ArtView(data: context.state.albumArtThumbnail, size: 52)
-                        .padding(.leading, 4)
+                    ArtView(data: context.state.albumArtThumbnail, size: 50)
+                        .padding(.leading, 2)
+                        .padding(.trailing, 6)
+                        .frame(maxHeight: .infinity, alignment: .bottom)
                 }
                 DynamicIslandExpandedRegion(.center) {
-                    VStack(alignment: .leading, spacing: 2) {
+                    let accent = themeColor(from: context.state.dominantColorHex)
+                    let extra = context.state.groupMemberCount > 1
+                        ? " + \(context.state.groupMemberCount - 1)" : ""
+                    VStack(alignment: .leading, spacing: 3) {
                         Text(context.state.trackTitle)
-                            .font(.caption.bold())
+                            .font(.subheadline.bold())
                             .lineLimit(1)
                         Text(context.state.artist)
-                            .font(.caption2)
+                            .font(.caption)
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
-                        Text(context.attributes.speakerName)
-                            .font(.system(size: 9, weight: .medium))
-                            .foregroundStyle(.tertiary)
-                            .lineLimit(1)
+                        HStack(spacing: 4) {
+                            Text("ON \(context.attributes.speakerName.uppercased())\(extra)")
+                                .font(.system(size: 9, weight: .semibold))
+                                .foregroundStyle(accent.opacity(0.8))
+                                .lineLimit(1)
+                            if context.state.isPlaying {
+                                AnimatedWaveform(accent: accent, barCount: 3, height: 7)
+                            }
+                        }
+                        .padding(.top, 1)
                     }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
                 }
                 DynamicIslandExpandedRegion(.trailing) {
-                    VStack(spacing: 6) {
-                        Button(intent: PlayPauseIntent()) {
-                            Image(systemName: context.state.isPlaying ? "pause.circle.fill" : "play.circle.fill")
-                                .font(.title2)
-                                .foregroundStyle(themeColor(from: context.state.dominantColorHex))
+                    let source = context.state.playbackSourceRaw
+                        .flatMap(PlaybackSource.init(rawValue:)) ?? .unknown
+                    VStack(alignment: .trailing, spacing: 4) {
+                        if source != .unknown {
+                            SourceBadgeView(source: source,
+                                            tintColor: themeColor(from: context.state.dominantColorHex),
+                                            compact: true)
                         }
-                        .buttonStyle(.plain)
-                        if context.state.isPlaying {
-                            AnimatedWaveform(accent: themeColor(from: context.state.dominantColorHex),
-                                            barCount: 3, height: 10)
-                        }
+                        Spacer(minLength: 0)
                     }
                     .padding(.trailing, 4)
+                    .padding(.top, 6)
                 }
                 DynamicIslandExpandedRegion(.bottom) {
-                    VStack(spacing: 10) {
+                    let accent = themeColor(from: context.state.dominantColorHex)
+                    VStack(spacing: 8) {
                         LiveProgressView(state: context.state)
-                        HStack(spacing: 36) {
+                        HStack(spacing: 40) {
                             Button(intent: PreviousTrackIntent()) {
-                                Image(systemName: "backward.fill").font(.body)
+                                Image(systemName: "backward.fill")
+                                    .font(.callout)
+                                    .foregroundStyle(.white.opacity(0.85))
                             }.buttonStyle(.plain)
 
                             Button(intent: PlayPauseIntent()) {
-                                Image(systemName: context.state.isPlaying ? "pause.circle.fill" : "play.circle.fill")
-                                    .font(.title)
-                                    .foregroundStyle(themeColor(from: context.state.dominantColorHex))
+                                Image(systemName: context.state.isPlaying ? "pause.fill" : "play.fill")
+                                    .font(.title2)
+                                    .foregroundStyle(accent)
                             }.buttonStyle(.plain)
 
                             Button(intent: NextTrackIntent()) {
-                                Image(systemName: "forward.fill").font(.body)
+                                Image(systemName: "forward.fill")
+                                    .font(.callout)
+                                    .foregroundStyle(.white.opacity(0.85))
                             }.buttonStyle(.plain)
                         }
                     }
+                    .padding(.horizontal, 4)
                     .padding(.bottom, 4)
                 }
             } compactLeading: {
@@ -89,57 +106,38 @@ private struct LockScreenView: View {
 
     var body: some View {
         let accent = themeColor(from: context.state.dominantColorHex)
+        let extra = context.state.groupMemberCount > 1
+            ? " + \(context.state.groupMemberCount - 1)" : ""
+        let source = context.state.playbackSourceRaw
+            .flatMap(PlaybackSource.init(rawValue:)) ?? .unknown
 
-        ZStack {
-            // ── Blurred album art background ──
-            if let data = context.state.albumArtThumbnail,
-               let img = UIImage(data: data) {
-                Image(uiImage: img)
-                    .resizable()
-                    .aspectRatio(contentMode: .fill)
-                    .blur(radius: 40)
-                    .scaleEffect(1.5)
-                    .clipped()
-            }
-            // Dark overlay so text stays readable
-            LinearGradient(
-                colors: [.black.opacity(0.55), .black.opacity(0.75)],
-                startPoint: .top,
-                endPoint: .bottom
-            )
+        VStack(spacing: 6) {
+            // ── Single row: art | text | controls ──
+            HStack(spacing: 12) {
+                ArtView(data: context.state.albumArtThumbnail, size: 48)
 
-            // ── Content ──
-            HStack(spacing: 14) {
-                ArtView(data: context.state.albumArtThumbnail, size: 60)
-
-                VStack(alignment: .leading, spacing: 4) {
+                VStack(alignment: .leading, spacing: 2) {
                     Text(context.state.trackTitle)
                         .font(.subheadline.bold())
                         .lineLimit(1)
-
                     Text(context.state.artist)
                         .font(.caption)
                         .foregroundStyle(.white.opacity(0.7))
                         .lineLimit(1)
-
-                    HStack(spacing: 6) {
-                        Text("ON \(context.attributes.speakerName.uppercased())")
+                    HStack(spacing: 5) {
+                        Text("ON \(context.attributes.speakerName.uppercased())\(extra)")
                             .font(.system(size: 9, weight: .semibold))
                             .foregroundStyle(accent.opacity(0.8))
-
+                            .lineLimit(1)
                         if context.state.isPlaying {
                             AnimatedWaveform(accent: accent, barCount: 4, height: 8)
                         }
                     }
-                    .padding(.top, 1)
-
-                    LiveProgressView(state: context.state)
-                        .padding(.top, 2)
                 }
 
                 Spacer(minLength: 0)
 
-                HStack(spacing: 16) {
+                HStack(spacing: 14) {
                     Button(intent: PreviousTrackIntent()) {
                         Image(systemName: "backward.fill").font(.callout)
                     }.buttonStyle(.plain)
@@ -155,8 +153,29 @@ private struct LockScreenView: View {
                     }.buttonStyle(.plain)
                 }
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 14)
+
+            // ── Progress bar ──
+            LiveProgressView(state: context.state)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .background {
+            ZStack {
+                if let data = context.state.albumArtThumbnail,
+                   let img = UIImage(data: data) {
+                    Image(uiImage: img)
+                        .resizable()
+                        .aspectRatio(contentMode: .fill)
+                        .blur(radius: 40)
+                        .scaleEffect(1.5)
+                        .clipped()
+                }
+                LinearGradient(
+                    colors: [.black.opacity(0.55), .black.opacity(0.75)],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+            }
         }
         .activityBackgroundTint(.clear)
         .activitySystemActionForegroundColor(.white)

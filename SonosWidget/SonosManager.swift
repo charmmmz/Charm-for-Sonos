@@ -948,10 +948,11 @@ final class SonosManager {
             ? anchor.addingTimeInterval(-positionSeconds) : nil
         let endsAt = isPlaying && durationSeconds > 0
             ? anchor.addingTimeInterval(durationSeconds - positionSeconds) : nil
-        // Compress album art to a small thumbnail (~50×50 JPEG) for embedding in ContentState.
+        // Compress album art to a small thumbnail for embedding in ContentState.
+        // Keep under ~2KB to stay well within ActivityKit's ContentState size limit.
         let thumbnail: Data? = albumArtImage.flatMap {
-            $0.preparingThumbnail(of: CGSize(width: 50, height: 50))?
-                .jpegData(compressionQuality: 0.6)
+            $0.preparingThumbnail(of: CGSize(width: 60, height: 60))?
+                .jpegData(compressionQuality: 0.65)
         }
         return .init(
             trackTitle: trackInfo?.title ?? "Not Playing",
@@ -963,7 +964,9 @@ final class SonosManager {
             dominantColorHex: SharedStorage.cachedDominantColorHex,
             startedAt: startedAt,
             endsAt: endsAt,
-            albumArtThumbnail: thumbnail
+            albumArtThumbnail: thumbnail,
+            groupMemberCount: currentGroupMembers.filter { !$0.isInvisible }.count,
+            playbackSourceRaw: trackInfo?.source.rawValue
         )
     }
 

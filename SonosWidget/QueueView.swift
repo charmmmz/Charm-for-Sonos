@@ -36,7 +36,7 @@ struct QueueView: View {
                                 // Make row background transparent when embedded so the
                                 // blurred album-art background shows through.
                                 .listRowBackground(
-                                    showNavigation ? nil : Color.white.opacity(isNowPlaying ? 0.08 : 0)
+                                    showNavigation ? nil : Color.clear
                                 )
                                 .swipeActions(edge: .trailing, allowsFullSwipe: !isNowPlaying) {
                                     if !isNowPlaying {
@@ -97,6 +97,10 @@ struct QueueView: View {
         let accent = manager.albumArtDominantColor ?? .accentColor
 
         return HStack(spacing: 12) {
+            RoundedRectangle(cornerRadius: 1.5)
+                .fill(isNowPlaying ? accent : .clear)
+                .frame(width: 3, height: 40)
+
             Group {
                 if let urlStr = item.albumArtURL,
                    manager.cachedArtURLs.contains(urlStr),
@@ -130,7 +134,7 @@ struct QueueView: View {
 
             Spacer()
         }
-        .scaleEffect(isNowPlaying ? 1.03 : 1.0, anchor: .leading)
+        .scaleEffect(isNowPlaying ? 1.05 : 1.0, anchor: .leading)
         .animation(.spring(response: 0.4, dampingFraction: 0.75), value: isNowPlaying)
         .contentShape(Rectangle())
         .onTapGesture {
