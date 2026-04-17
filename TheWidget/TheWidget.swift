@@ -50,8 +50,26 @@ struct SonosProvider: TimelineProvider {
     func getTimeline(in context: Context, completion: @escaping (Timeline<SonosEntry>) -> Void) {
         Task {
             let entry = await fetchLiveEntry()
-            let next = Calendar.current.date(byAdding: .minute, value: 2, to: .now)!
-            completion(Timeline(entries: [entry], policy: .after(next)))
+
+            // If a song is playing, schedule a refresh right when it should end.
+            // This gives WidgetKit a concrete deadline to honor rather than a vague "2 minutes".
+            // Fall back to 2 minutes if no duration info is available.
+            let fallback = Date().addingTimeInterval(2 * 60)
+            var nextRefresh = fallback
+
+            if SharedStorage.isPlaying,
+               let ip = SharedStorage.coordinatorIP ?? SharedStorage.speakerIP,
+               let info = try? await SonosAPI.getPositionInfo(ip: ip) {
+                let remaining = info.durationSeconds - info.positionSeconds
+                if remaining > 5 && remaining < 20 * 60 {
+                    // Refresh 2s after the song ends so the next song has started.
+                    nextRefresh = Date().addingTimeInterval(remaining + 2)
+                }
+            }
+
+            // Always cap at 2 minutes so we don't wait too long for short/unknown tracks.
+            nextRefresh = min(nextRefresh, fallback)
+            completion(Timeline(entries: [entry], policy: .after(nextRefresh)))
         }
     }
 

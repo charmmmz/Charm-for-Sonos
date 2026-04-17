@@ -39,6 +39,10 @@ final class SonosManager {
     private var consecutiveFailures = 0
     private var currentActivity: Activity<SonosActivityAttributes>?
     private var albumArtTask: Task<Void, Never>?
+    private var backgroundTaskID: UIBackgroundTaskIdentifier = .invalid
+    private var backgroundKeepaliveTask: Task<Void, Never>?
+    /// Timestamp of the last real Sonos position fetch, used to keep timerInterval accurate.
+    private var positionFetchedAt: Date = .now
 
     /// Cloud API group ID resolved for the currently selected speaker.
     private var cloudGroupId: String?
@@ -631,6 +635,7 @@ final class SonosManager {
 
             positionSeconds = trackInfo?.positionSeconds ?? 0
             durationSeconds = trackInfo?.durationSeconds ?? 0
+            positionFetchedAt = Date()
 
             // Restore cached cloud quality if UPnP didn't provide one and the track matches.
             if trackInfo?.audioQuality == nil,
@@ -758,11 +763,59 @@ final class SonosManager {
                 }
             }
         }
+
+        // Start background keepalive when app goes to background (while Live Activity is running).
+        NotificationCenter.default.addObserver(forName: UIApplication.didEnterBackgroundNotification,
+                                               object: nil, queue: .main) { [weak self] _ in
+            self?.startBackgroundKeepalive()
+        }
+        NotificationCenter.default.addObserver(forName: UIApplication.willEnterForegroundNotification,
+                                               object: nil, queue: .main) { [weak self] _ in
+            self?.stopBackgroundKeepalive()
+        }
     }
 
     func stopAutoRefresh() {
         refreshTimer?.invalidate()
         refreshTimer = nil
+        stopBackgroundKeepalive()
+        NotificationCenter.default.removeObserver(self,
+            name: UIApplication.didEnterBackgroundNotification, object: nil)
+        NotificationCenter.default.removeObserver(self,
+            name: UIApplication.willEnterForegroundNotification, object: nil)
+    }
+
+    // MARK: - Background Keepalive for Live Activity
+
+    /// When music is playing and the app moves to background, iOS suspends our Timer.
+    /// This grabs ~30s of background execution time and polls every 5s so the Live
+    /// Activity (track title, progress timestamps) stays fresh through track changes.
+    @MainActor
+    private func startBackgroundKeepalive() {
+        guard currentActivity != nil else { return }
+        stopBackgroundKeepalive()
+
+        backgroundTaskID = UIApplication.shared.beginBackgroundTask(withName: "SonosLiveActivity") { [weak self] in
+            self?.stopBackgroundKeepalive()
+        }
+
+        backgroundKeepaliveTask = Task { [weak self] in
+            for _ in 0..<5 {
+                try? await Task.sleep(for: .seconds(5))
+                guard let self, !Task.isCancelled else { break }
+                await self.refreshState()
+            }
+            await MainActor.run { self?.stopBackgroundKeepalive() }
+        }
+    }
+
+    @MainActor
+    private func stopBackgroundKeepalive() {
+        backgroundKeepaliveTask?.cancel()
+        backgroundKeepaliveTask = nil
+        guard backgroundTaskID != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(backgroundTaskID)
+        backgroundTaskID = .invalid
     }
 
     // MARK: - Position Timer
@@ -785,38 +838,74 @@ final class SonosManager {
 
     private func manageLiveActivity() {
         guard let speaker = selectedSpeaker else { return }
-        let state = makeActivityState()
 
-        if isPlaying || transportState == .paused {
-            if currentActivity == nil {
-                let attrs = SonosActivityAttributes(speakerName: speaker.name)
-                currentActivity = try? Activity.request(
-                    attributes: attrs,
-                    content: .init(state: state, staleDate: nil),
-                    pushType: nil
-                )
-            } else {
-                Task { await currentActivity?.update(.init(state: state, staleDate: nil)) }
-            }
-        } else {
+        let shouldKeep = isPlaying || transportState == .paused || transportState == .transitioning
+        guard shouldKeep else {
             stopLiveActivity()
+            return
         }
+
+        // Reattach to an existing activity if the in-memory reference was lost (app relaunch).
+        if currentActivity == nil {
+            currentActivity = Activity<SonosActivityAttributes>.activities.first
+        }
+
+        if currentActivity == nil {
+            // No existing activity — create one (always, even during TRANSITIONING).
+            let state = makeActivityState()
+            let attrs = SonosActivityAttributes(speakerName: speaker.name)
+            currentActivity = try? Activity.request(
+                attributes: attrs,
+                content: .init(state: state, staleDate: nil),
+                pushType: nil
+            )
+            return
+        }
+
+        // During TRANSITIONING the Sonos device is buffering between tracks.
+        // isPlaying == false here, so makeActivityState() would produce nil startedAt/endsAt,
+        // causing the Live Activity to fall back to a frozen static progress bar.
+        // Instead, skip the update entirely — the existing timerInterval keeps animating on its
+        // own using the device clock. We'll push a fresh state once the new track is actually
+        // playing (next refreshState cycle).
+        guard transportState != .transitioning else { return }
+
+        let state = makeActivityState()
+        Task { await currentActivity?.update(.init(state: state, staleDate: nil)) }
     }
 
     func stopLiveActivity() {
+        // Only end activities when we actually have a reference — this prevents
+        // accidentally killing a valid activity on app launch before state is fetched.
         guard let activity = currentActivity else { return }
         currentActivity = nil
         Task { await activity.end(nil, dismissalPolicy: .immediate) }
     }
 
     private func makeActivityState() -> SonosActivityAttributes.ContentState {
-        .init(
+        // Anchor the timerInterval to the moment the Sonos position was actually fetched,
+        // not to Date() which is slightly later. This prevents small jitter on each update.
+        let anchor = positionFetchedAt
+        let startedAt = isPlaying && durationSeconds > 0
+            ? anchor.addingTimeInterval(-positionSeconds) : nil
+        let endsAt = isPlaying && durationSeconds > 0
+            ? anchor.addingTimeInterval(durationSeconds - positionSeconds) : nil
+        // Compress album art to a small thumbnail (~50×50 JPEG) for embedding in ContentState.
+        let thumbnail: Data? = albumArtImage.flatMap {
+            $0.preparingThumbnail(of: CGSize(width: 50, height: 50))?
+                .jpegData(compressionQuality: 0.6)
+        }
+        return .init(
             trackTitle: trackInfo?.title ?? "Not Playing",
             artist: trackInfo?.artist ?? "—",
             album: trackInfo?.album ?? "",
             isPlaying: isPlaying,
             positionSeconds: positionSeconds,
-            durationSeconds: durationSeconds
+            durationSeconds: durationSeconds,
+            dominantColorHex: SharedStorage.cachedDominantColorHex,
+            startedAt: startedAt,
+            endsAt: endsAt,
+            albumArtThumbnail: thumbnail
         )
     }
 

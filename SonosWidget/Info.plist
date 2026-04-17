@@ -19,6 +19,10 @@
 	</array>
 	<key>CADisableMinimumFrameDurationOnPhone</key>
 	<true/>
+	<key>NSSupportsLiveActivities</key>
+	<true/>
+	<key>NSSupportsLiveActivitiesFrequentUpdates</key>
+	<true/>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>SonosWidget needs to access your local network to discover and control Sonos speakers.</string>
 	<key>NSBonjourServices</key>

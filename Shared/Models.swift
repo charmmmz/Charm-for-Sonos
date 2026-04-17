@@ -329,6 +329,14 @@ struct SonosActivityAttributes: ActivityAttributes {
         var isPlaying: Bool
         var positionSeconds: Double
         var durationSeconds: Double
+        var dominantColorHex: String?
+        /// When playing: Date() - positionSeconds. Used for real-time progress via timerInterval.
+        var startedAt: Date?
+        /// When playing: Date() + remainingSeconds. Pair with startedAt for ProgressView(timerInterval:).
+        var endsAt: Date?
+        /// Album art compressed to ≤15KB thumbnail, embedded directly so the Live Activity
+        /// renderer (separate process) doesn't need to hit UserDefaults / app group.
+        var albumArtThumbnail: Data?
     }
     var speakerName: String
 }
