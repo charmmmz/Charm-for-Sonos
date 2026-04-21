@@ -245,62 +245,6 @@ enum SonosCloudAPI {
         return try JSONDecoder().decode(CloudSearchResponse.self, from: data)
     }
 
-    // MARK: - Favorites
-
-    struct CloudFavorite: Decodable {
-        let id: String
-        let name: String?
-        let description: String?
-        let imageUrl: String?
-        let service: CloudFavoriteService?
-    }
-
-    struct CloudFavoriteService: Decodable {
-        let id: String?
-        let name: String?
-    }
-
-    private struct FavoritesResponse: Decodable {
-        let version: String?
-        let items: [CloudFavorite]?
-    }
-
-    /// List all Sonos Favorites for a household.
-    static func getFavorites(token: String, householdId: String) async throws -> [CloudFavorite] {
-        let data = try await get(path: "/households/\(householdId)/favorites", token: token)
-        let response = try JSONDecoder().decode(FavoritesResponse.self, from: data)
-        let items = response.items ?? []
-        print("[CloudAPI] getFavorites → \(items.count) items")
-        return items
-    }
-
-    /// Load a Sonos Favorite by its Cloud API ID and start playback.
-    static func loadFavorite(token: String, groupId: String,
-                             favoriteId: String, playOnCompletion: Bool = true) async throws {
-        let urlStr = "\(baseURL)/groups/\(groupId)/favorites"
-        guard let url = URL(string: urlStr) else { throw URLError(.badURL) }
-
-        let body: [String: Any] = [
-            "favoriteId": favoriteId,
-            "playOnCompletion": playOnCompletion
-        ]
-
-        var request = URLRequest(url: url, timeoutInterval: 15)
-        request.httpMethod = "POST"
-        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
-
-        let (data, response) = try await URLSession.shared.data(for: request)
-        let http = response as? HTTPURLResponse
-        let status = http?.statusCode ?? -1
-        let text = String(data: data, encoding: .utf8) ?? ""
-        print("[CloudAPI] loadFavorite(id=\(favoriteId)) → HTTP \(status): \(text.prefix(500))")
-
-        if status == 401 { throw SonosCloudError.unauthorized }
-        if !(200...299).contains(status) { throw SonosCloudError.httpError(status) }
-    }
-
     // MARK: - Networking
 
     private static func get(path: String, token: String) async throws -> Data {

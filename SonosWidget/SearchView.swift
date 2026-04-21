@@ -8,6 +8,8 @@ struct SearchView: View {
     @State private var expandedCategory: BrowseItem.FavoriteCategory?
     /// nil = "All", otherwise the serviceId string
     @State private var selectedServiceTab: String?
+    /// Tracks which item is currently being loaded for playback
+    @State private var playingItemId: String?
 
     var body: some View {
         NavigationStack {
@@ -83,6 +85,24 @@ struct SearchView: View {
                 }
                 Button("Cancel", role: .cancel) {}
             }
+        }
+    }
+
+    private func playItem(_ item: BrowseItem) {
+        guard playingItemId == nil else { return }
+        playingItemId = item.id
+        Task {
+            await searchManager.playNow(item: item, manager: manager)
+            withAnimation(.easeOut(duration: 0.2)) { playingItemId = nil }
+        }
+    }
+
+    private func startStationForItem(_ item: BrowseItem) {
+        guard playingItemId == nil else { return }
+        playingItemId = item.id
+        Task {
+            await searchManager.startStation(item: item, manager: manager)
+            withAnimation(.easeOut(duration: 0.2)) { playingItemId = nil }
         }
     }
 
@@ -236,8 +256,12 @@ struct SearchView: View {
     // MARK: - Cards
 
     private func browseCard(_ item: BrowseItem, category: BrowseItem.FavoriteCategory?) -> some View {
-        Button {
-            Task { await searchManager.playNow(item: item, manager: manager) }
+        let isLoading = playingItemId == item.id
+        let isDisabled = playingItemId != nil && !isLoading
+        let cornerRadius: CGFloat = category == .artist ? 70 : 10
+
+        return Button {
+            playItem(item)
         } label: {
             VStack(alignment: .leading, spacing: 6) {
                 AsyncImage(url: URL(string: item.albumArtURL ?? "")) { phase in
@@ -252,7 +276,19 @@ struct SearchView: View {
                     }
                 }
                 .frame(width: 140, height: 140)
-                .clipShape(RoundedRectangle(cornerRadius: category == .artist ? 70 : 10))
+                .clipShape(RoundedRectangle(cornerRadius: cornerRadius))
+                .overlay {
+                    if isLoading {
+                        RoundedRectangle(cornerRadius: cornerRadius)
+                            .fill(.ultraThinMaterial.opacity(0.85))
+                            .overlay {
+                                ProgressView()
+                                    .tint(.white)
+                                    .controlSize(.regular)
+                            }
+                            .transition(.opacity)
+                    }
+                }
 
                 Text(item.title)
                     .font(.caption.weight(.medium))
@@ -262,8 +298,11 @@ struct SearchView: View {
                 categoryLabel(for: item, category: category)
             }
             .frame(width: 140)
+            .opacity(isDisabled ? 0.4 : 1)
         }
         .buttonStyle(.plain)
+        .disabled(isDisabled)
+        .animation(.easeInOut(duration: 0.2), value: playingItemId)
         .contextMenu { itemContextMenu(item) }
     }
 
@@ -307,23 +346,40 @@ struct SearchView: View {
     }
 
     private func browseRow(_ item: BrowseItem) -> some View {
-        Button {
-            Task { await searchManager.playNow(item: item, manager: manager) }
+        let isLoading = playingItemId == item.id
+        let isDisabled = playingItemId != nil && !isLoading
+
+        return Button {
+            playItem(item)
         } label: {
             HStack(spacing: 12) {
-                AsyncImage(url: URL(string: item.albumArtURL ?? "")) { phase in
-                    if let img = phase.image {
-                        img.resizable().aspectRatio(contentMode: .fill)
-                    } else {
-                        Rectangle().fill(.quaternary)
+                ZStack {
+                    AsyncImage(url: URL(string: item.albumArtURL ?? "")) { phase in
+                        if let img = phase.image {
+                            img.resizable().aspectRatio(contentMode: .fill)
+                        } else {
+                            Rectangle().fill(.quaternary)
+                                .overlay {
+                                    Image(systemName: item.isContainer ? "music.note.list" : "music.note")
+                                        .font(.caption2).foregroundStyle(.tertiary)
+                                }
+                        }
+                    }
+                    .frame(width: 48, height: 48)
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+
+                    if isLoading {
+                        RoundedRectangle(cornerRadius: 6)
+                            .fill(.ultraThinMaterial.opacity(0.85))
+                            .frame(width: 48, height: 48)
                             .overlay {
-                                Image(systemName: item.isContainer ? "music.note.list" : "music.note")
-                                    .font(.caption2).foregroundStyle(.tertiary)
+                                ProgressView()
+                                    .tint(.white)
+                                    .controlSize(.small)
                             }
+                            .transition(.opacity)
                     }
                 }
-                .frame(width: 48, height: 48)
-                .clipShape(RoundedRectangle(cornerRadius: 6))
 
                 VStack(alignment: .leading, spacing: 3) {
                     Text(item.title)
@@ -339,14 +395,23 @@ struct SearchView: View {
 
                 Spacer()
 
-                Image(systemName: "chevron.right")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
+                if isLoading {
+                    ProgressView()
+                        .tint(.secondary)
+                        .controlSize(.small)
+                } else {
+                    Image(systemName: "chevron.right")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
             }
             .padding(.horizontal)
             .padding(.vertical, 8)
+            .opacity(isDisabled ? 0.4 : 1)
         }
         .buttonStyle(.plain)
+        .disabled(isDisabled)
+        .animation(.easeInOut(duration: 0.2), value: playingItemId)
         .contextMenu { itemContextMenu(item) }
     }
 
@@ -531,8 +596,11 @@ struct SearchView: View {
         ScrollView(.horizontal, showsIndicators: false) {
             LazyHStack(spacing: 16) {
                 ForEach(items) { item in
+                    let isLoading = playingItemId == item.id
+                    let isDisabled = playingItemId != nil && !isLoading
+
                     Button {
-                        Task { await searchManager.startStation(item: item, manager: manager) }
+                        startStationForItem(item)
                     } label: {
                         VStack(spacing: 8) {
                             AsyncImage(url: URL(string: item.albumArtURL ?? "")) { phase in
@@ -548,6 +616,18 @@ struct SearchView: View {
                             }
                             .frame(width: 120, height: 120)
                             .clipShape(Circle())
+                            .overlay {
+                                if isLoading {
+                                    Circle()
+                                        .fill(.ultraThinMaterial.opacity(0.85))
+                                        .overlay {
+                                            ProgressView()
+                                                .tint(.white)
+                                                .controlSize(.regular)
+                                        }
+                                        .transition(.opacity)
+                                }
+                            }
 
                             Text(item.title)
                                 .font(.caption.weight(.medium))
@@ -559,8 +639,11 @@ struct SearchView: View {
                                 .foregroundStyle(.secondary)
                         }
                         .frame(width: 120)
+                        .opacity(isDisabled ? 0.4 : 1)
                     }
                     .buttonStyle(.plain)
+                    .disabled(isDisabled)
+                    .animation(.easeInOut(duration: 0.2), value: playingItemId)
                     .contextMenu { itemContextMenu(item) }
                 }
             }
@@ -573,25 +656,42 @@ struct SearchView: View {
     private func songList(items: [BrowseItem]) -> some View {
         LazyVStack(spacing: 0) {
             ForEach(items) { item in
+                let isLoading = playingItemId == item.id
+                let isDisabled = playingItemId != nil && !isLoading
+
                 Button {
-                    Task { await searchManager.playNow(item: item, manager: manager) }
+                    playItem(item)
                 } label: {
                     HStack(spacing: 12) {
-                        AsyncImage(url: URL(string: item.albumArtURL ?? "")) { phase in
-                            if let img = phase.image {
-                                img.resizable().aspectRatio(contentMode: .fill)
-                            } else {
-                                Rectangle().fill(.quaternary)
+                        ZStack {
+                            AsyncImage(url: URL(string: item.albumArtURL ?? "")) { phase in
+                                if let img = phase.image {
+                                    img.resizable().aspectRatio(contentMode: .fill)
+                                } else {
+                                    Rectangle().fill(.quaternary)
+                                        .overlay {
+                                            Image(systemName: item.cloudType == "PROGRAM"
+                                                  ? "antenna.radiowaves.left.and.right"
+                                                  : "music.note")
+                                                .font(.caption2).foregroundStyle(.tertiary)
+                                        }
+                                }
+                            }
+                            .frame(width: 48, height: 48)
+                            .clipShape(RoundedRectangle(cornerRadius: 6))
+
+                            if isLoading {
+                                RoundedRectangle(cornerRadius: 6)
+                                    .fill(.ultraThinMaterial.opacity(0.85))
+                                    .frame(width: 48, height: 48)
                                     .overlay {
-                                        Image(systemName: item.cloudType == "PROGRAM"
-                                              ? "antenna.radiowaves.left.and.right"
-                                              : "music.note")
-                                            .font(.caption2).foregroundStyle(.tertiary)
+                                        ProgressView()
+                                            .tint(.white)
+                                            .controlSize(.small)
                                     }
+                                    .transition(.opacity)
                             }
                         }
-                        .frame(width: 48, height: 48)
-                        .clipShape(RoundedRectangle(cornerRadius: 6))
 
                         VStack(alignment: .leading, spacing: 3) {
                             Text(item.title)
@@ -612,19 +712,28 @@ struct SearchView: View {
 
                         Spacer()
 
-                        Button {
-                            // Future: show action sheet
-                        } label: {
-                            Image(systemName: "ellipsis")
-                                .font(.body)
-                                .foregroundStyle(.secondary)
-                                .frame(width: 32, height: 32)
+                        if isLoading {
+                            ProgressView()
+                                .tint(.secondary)
+                                .controlSize(.small)
+                        } else {
+                            Button {
+                                // Future: show action sheet
+                            } label: {
+                                Image(systemName: "ellipsis")
+                                    .font(.body)
+                                    .foregroundStyle(.secondary)
+                                    .frame(width: 32, height: 32)
+                            }
                         }
                     }
                     .padding(.horizontal)
                     .padding(.vertical, 8)
+                    .opacity(isDisabled ? 0.4 : 1)
                 }
                 .buttonStyle(.plain)
+                .disabled(isDisabled)
+                .animation(.easeInOut(duration: 0.2), value: playingItemId)
                 .contextMenu { itemContextMenu(item) }
             }
         }
@@ -636,8 +745,11 @@ struct SearchView: View {
         ScrollView(.horizontal, showsIndicators: false) {
             LazyHStack(spacing: 12) {
                 ForEach(items) { item in
+                    let isLoading = playingItemId == item.id
+                    let isDisabled = playingItemId != nil && !isLoading
+
                     Button {
-                        Task { await searchManager.playNow(item: item, manager: manager) }
+                        playItem(item)
                     } label: {
                         VStack(alignment: .leading, spacing: 6) {
                             AsyncImage(url: URL(string: item.albumArtURL ?? "")) { phase in
@@ -654,6 +766,18 @@ struct SearchView: View {
                             }
                             .frame(width: 140, height: 140)
                             .clipShape(RoundedRectangle(cornerRadius: 10))
+                            .overlay {
+                                if isLoading {
+                                    RoundedRectangle(cornerRadius: 10)
+                                        .fill(.ultraThinMaterial.opacity(0.85))
+                                        .overlay {
+                                            ProgressView()
+                                                .tint(.white)
+                                                .controlSize(.regular)
+                                        }
+                                        .transition(.opacity)
+                                }
+                            }
 
                             Text(item.title)
                                 .font(.caption.weight(.medium))
@@ -667,8 +791,11 @@ struct SearchView: View {
                             }
                         }
                         .frame(width: 140)
+                        .opacity(isDisabled ? 0.4 : 1)
                     }
                     .buttonStyle(.plain)
+                    .disabled(isDisabled)
+                    .animation(.easeInOut(duration: 0.2), value: playingItemId)
                     .contextMenu { itemContextMenu(item) }
                 }
             }
@@ -682,13 +809,13 @@ struct SearchView: View {
     private func itemContextMenu(_ item: BrowseItem) -> some View {
         if item.isArtist {
             Button {
-                Task { await searchManager.startStation(item: item, manager: manager) }
+                startStationForItem(item)
             } label: {
                 Label("Start Station", systemImage: "antenna.radiowaves.left.and.right")
             }
         } else if item.uri != nil || item.resMD != nil {
             Button {
-                Task { await searchManager.playNow(item: item, manager: manager) }
+                playItem(item)
             } label: {
                 Label("Play Now", systemImage: "play.fill")
             }

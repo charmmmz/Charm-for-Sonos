@@ -43,8 +43,6 @@ final class SearchManager {
     private var speakerIP: String?
     private var searchTask: Task<Void, Never>?
     private var hasProbed = false
-    /// Cached Cloud API favorites list for matching UPnP favorites to Cloud IDs.
-    private var cloudFavorites: [SonosCloudAPI.CloudFavorite]?
 
     func configure(speakerIP: String?) {
         self.speakerIP = speakerIP
@@ -184,7 +182,6 @@ final class SearchManager {
         guard let ip = speakerIP else { return }
         isLoadingBrowse = true
         errorMessage = nil
-        cloudFavorites = nil
 
         async let favs = tryBrowse { try await SonosAPI.browseFavorites(ip: ip) }
         async let lists = tryBrowse { try await SonosAPI.browsePlaylists(ip: ip) }
@@ -467,12 +464,6 @@ final class SearchManager {
         print("[Playback] ====== playNow START ======")
         print("[Playback] title=\(item.title) isContainer=\(item.isContainer) id=\(item.id)")
 
-        // For Sonos Favorites, try Cloud API first (better metadata/art in recently played)
-        if item.id.hasPrefix("FV:"), await tryCloudFavorite(item: item, manager: manager) {
-            print("[Playback] ====== playNow END (Cloud) ======")
-            return
-        }
-
         guard let ip = manager.selectedSpeaker?.playbackIP else {
             print("[Playback] ABORT: no speaker IP")
             return
@@ -505,24 +496,23 @@ final class SearchManager {
                 return
             }
 
-            if item.isContainer || uri.contains("x-rincon-cpcontainer:") {
-                if item.id.hasPrefix("FV:") {
-                    // Favorites containers: use direct SetAVTransportURI so Sonos
-                    // records the container metadata (including cover art) in
-                    // "recently played", matching official Sonos app behavior.
-                    print("[Playback] → Direct transport (favorite container)")
-                    try await SonosAPI.setAVTransportURI(ip: ip, uri: uri, metadata: playMeta)
-                    try await SonosAPI.play(ip: ip)
-                    print("[Playback] Direct transport playback started")
-                } else {
-                    print("[Playback] → Queue approach (container)")
-                    try? await SonosAPI.removeAllTracksFromQueue(ip: ip)
-                    let trackNr = try await SonosAPI.addURIToQueue(ip: ip, uri: uri, metadata: playMeta)
-                    try await SonosAPI.setAVTransportToQueue(ip: ip, speakerUUID: uuid)
-                    try await SonosAPI.seekToTrack(ip: ip, trackNumber: trackNr)
-                    try await SonosAPI.play(ip: ip)
-                    print("[Playback] Queue playback started at track \(trackNr)")
-                }
+            let isRadio = uri.contains("x-sonosapi-radio:")
+                || uri.contains("x-sonosapi-stream:")
+                || uri.contains("x-sonosapi-hls:")
+
+            if isRadio {
+                print("[Playback] → Direct transport (radio/stream, queue preserved)")
+                try await SonosAPI.setAVTransportURI(ip: ip, uri: uri, metadata: playMeta)
+                try await SonosAPI.play(ip: ip)
+                print("[Playback] Radio playback started")
+            } else if item.isContainer || uri.contains("x-rincon-cpcontainer:") {
+                print("[Playback] → Queue approach (container)")
+                try? await SonosAPI.removeAllTracksFromQueue(ip: ip)
+                let trackNr = try await SonosAPI.addURIToQueue(ip: ip, uri: uri, metadata: playMeta)
+                try await SonosAPI.setAVTransportToQueue(ip: ip, speakerUUID: uuid)
+                try await SonosAPI.seekToTrack(ip: ip, trackNumber: trackNr)
+                try await SonosAPI.play(ip: ip)
+                print("[Playback] Queue playback started at track \(trackNr)")
             } else {
                 print("[Playback] → Queue approach (single track)")
                 try? await SonosAPI.removeAllTracksFromQueue(ip: ip)
@@ -542,38 +532,6 @@ final class SearchManager {
         print("[Playback] ====== playNow END ======")
     }
 
-    /// Try to play a favorite via the Sonos Cloud API. Returns true if successful.
-    private func tryCloudFavorite(item: BrowseItem, manager: SonosManager) async -> Bool {
-        guard let groupId = manager.currentCloudGroupId,
-              let token = await SonosAuth.shared.validAccessToken(),
-              let householdId = SonosAuth.shared.householdId else { return false }
-
-        do {
-            // Cache the favorites list to avoid repeated calls
-            if cloudFavorites == nil {
-                cloudFavorites = try await SonosCloudAPI.getFavorites(
-                    token: token, householdId: householdId)
-            }
-
-            guard let match = cloudFavorites?.first(where: {
-                ($0.name ?? "").localizedCaseInsensitiveCompare(item.title) == .orderedSame
-            }) else {
-                print("[Playback] No Cloud favorite match for \"\(item.title)\"")
-                return false
-            }
-
-            print("[Playback] → Cloud loadFavorite (id=\(match.id), name=\"\(match.name ?? "")\")")
-            try await SonosCloudAPI.loadFavorite(
-                token: token, groupId: groupId, favoriteId: match.id)
-
-            try? await Task.sleep(for: .milliseconds(1000))
-            await manager.refreshState()
-            return true
-        } catch {
-            print("[Playback] Cloud favorite failed: \(error)")
-            return false
-        }
-    }
 
     func playNext(item: BrowseItem, manager: SonosManager) async {
         guard let uri = item.uri else { return }
