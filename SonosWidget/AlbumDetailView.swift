@@ -471,6 +471,13 @@ struct AlbumDetailView: View {
         playingItemId = "play-all"
 
         Task {
+            if let ip = manager.selectedSpeaker?.playbackIP {
+                let current = try? await SonosAPI.getPlayMode(ip: ip)
+                if current?.shuffle == true {
+                    try? await SonosAPI.setPlayMode(ip: ip, shuffle: false,
+                                                    repeat: current?.repeat ?? .off)
+                }
+            }
             await searchManager.playNow(item: albumItem, manager: manager)
             withAnimation(.easeOut(duration: 0.2)) { playingItemId = nil }
         }

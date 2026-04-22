@@ -498,11 +498,13 @@ enum SonosCloudAPI {
 
     static func browsePlaylist(token: String, householdId: String,
                                serviceId: String, accountId: String,
-                               playlistId: String, count: Int = 100) async throws -> AlbumBrowseResponse {
+                               playlistId: String, count: Int = 100,
+                               offset: Int = 0) async throws -> AlbumBrowseResponse {
         let encodedPlaylist = playlistId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? playlistId
-        let urlStr = "\(playBaseURL.replacingOccurrences(of: "/v1", with: "/v2"))" +
+        var urlStr = "\(playBaseURL.replacingOccurrences(of: "/v1", with: "/v2"))" +
             "/households/\(householdId)/services/\(serviceId)" +
             "/accounts/\(accountId)/playlists/\(encodedPlaylist)/browse?muse2=true&count=\(count)"
+        if offset > 0 { urlStr += "&offset=\(offset)" }
 
         guard let url = URL(string: urlStr) else { throw URLError(.badURL) }
         print("[CloudAPI] browsePlaylist GET \(urlStr.prefix(200))")
@@ -528,11 +530,13 @@ enum SonosCloudAPI {
 
     static func browseContainer(token: String, householdId: String,
                                 serviceId: String, accountId: String,
-                                containerId: String, count: Int = 100) async throws -> AlbumBrowseResponse {
+                                containerId: String, count: Int = 100,
+                                offset: Int = 0) async throws -> AlbumBrowseResponse {
         let encodedContainer = containerId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? containerId
-        let urlStr = "\(playBaseURL.replacingOccurrences(of: "/v1", with: "/v2"))" +
+        var urlStr = "\(playBaseURL.replacingOccurrences(of: "/v1", with: "/v2"))" +
             "/households/\(householdId)/services/\(serviceId)" +
             "/accounts/\(accountId)/containers/\(encodedContainer)/browse?muse2=true&count=\(count)"
+        if offset > 0 { urlStr += "&offset=\(offset)" }
 
         guard let url = URL(string: urlStr) else { throw URLError(.badURL) }
         print("[CloudAPI] browseContainer GET \(urlStr.prefix(200))")

@@ -379,10 +379,10 @@ final class SonosManager {
         guard !ordered.isEmpty else { return }
 
         let diskCache = QueueArtDiskCache.shared
-        prefetchTask = Task(priority: .utility) { [weak self] in
+        prefetchTask = Task(priority: .userInitiated) { [weak self] in
             guard let self else { return }
             await withTaskGroup(of: Void.self) { group in
-                let maxConcurrent = 3
+                let maxConcurrent = 8
                 var index = 0
 
                 func addNext() {

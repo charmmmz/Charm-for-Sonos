@@ -118,19 +118,9 @@ struct QueueView: View {
                 .fill(isNowPlaying ? accent : .clear)
                 .frame(width: 3, height: 40)
 
-            Group {
-                if let urlStr = item.albumArtURL,
-                   manager.cachedArtURLs.contains(urlStr),
-                   let cached = manager.queueImage(for: urlStr) {
-                    Image(uiImage: cached)
-                        .resizable().aspectRatio(contentMode: .fill)
-                } else {
-                    Rectangle().fill(.quaternary)
-                        .overlay { Image(systemName: "music.note").font(.caption2).foregroundStyle(.tertiary) }
-                }
-            }
-            .frame(width: 48, height: 48)
-            .clipShape(RoundedRectangle(cornerRadius: 6))
+            QueueArtView(urlStr: item.albumArtURL, manager: manager)
+                .frame(width: 48, height: 48)
+                .clipShape(RoundedRectangle(cornerRadius: 6))
 
             VStack(alignment: .leading, spacing: 3) {
                 if isNowPlaying {
@@ -157,5 +147,40 @@ struct QueueView: View {
         .onTapGesture {
             Task { await manager.playTrackInQueue(item) }
         }
+    }
+}
+
+// MARK: - Queue Art View (cache-first with AsyncImage fallback)
+
+private struct QueueArtView: View {
+    let urlStr: String?
+    let manager: SonosManager
+
+    var body: some View {
+        if let urlStr,
+           manager.cachedArtURLs.contains(urlStr),
+           let cached = manager.queueImage(for: urlStr) {
+            Image(uiImage: cached)
+                .resizable().aspectRatio(contentMode: .fill)
+        } else if let urlStr, let url = URL(string: urlStr) {
+            AsyncImage(url: url) { phase in
+                if let img = phase.image {
+                    img.resizable().aspectRatio(contentMode: .fill)
+                } else {
+                    placeholder
+                }
+            }
+        } else {
+            placeholder
+        }
+    }
+
+    private var placeholder: some View {
+        Rectangle().fill(.quaternary)
+            .overlay {
+                Image(systemName: "music.note")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
     }
 }

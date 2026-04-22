@@ -6,6 +6,8 @@ struct PlaylistDetailView: View {
     let manager: SonosManager
 
     @State private var response: SonosCloudAPI.AlbumBrowseResponse?
+    @State private var extraTracks: [SonosCloudAPI.AlbumTrackItem] = []
+    @State private var allPagesLoaded = false
     @State private var isLoading = true
     @State private var errorText: String?
     @State private var playingItemId: String?
@@ -20,7 +22,8 @@ struct PlaylistDetailView: View {
         response?.images?.tile1x1 ?? playlistItem.albumArtURL
     }
     private var tracks: [SonosCloudAPI.AlbumTrackItem] {
-        response?.tracks?.items ?? response?.section?.items ?? []
+        let base = response?.tracks?.items ?? response?.section?.items ?? []
+        return extraTracks.isEmpty ? base : base + extraTracks
     }
 
     var body: some View {
@@ -178,7 +181,9 @@ struct PlaylistDetailView: View {
             parts.append("\(containerCount) items")
         } else {
             parts.append("\(trackCount) tracks")
-            parts.append(totalDuration)
+            if allPagesLoaded {
+                parts.append(totalDuration)
+            }
         }
         return parts.joined(separator: " · ")
     }
@@ -387,13 +392,21 @@ struct PlaylistDetailView: View {
             cloudType = "COLLECTION"
         }
 
+        let uri: String? = if let sid = serviceId, let aid = accountId {
+            searchManager.buildPlayableURIPublic(
+                objectId: objectId, serviceId: sid,
+                accountId: aid, type: rType)
+        } else {
+            nil
+        }
+
         return BrowseItem(
             id: objectId,
             title: item.title ?? "",
             artist: item.subtitle ?? "",
             album: "",
             albumArtURL: item.images?.tile1x1,
-            uri: nil,
+            uri: uri,
             isContainer: true,
             serviceId: serviceId.flatMap { searchManager.localSid(forCloudServiceId: $0) },
             cloudType: cloudType
@@ -545,13 +558,14 @@ struct PlaylistDetailView: View {
         let accountId = searchManager.linkedAccounts
             .first { $0.serviceId == serviceId }?.accountId ?? "2"
 
+        let pageSize = 100
         do {
             switch playlistItem.cloudType {
             case "COLLECTION":
                 response = try await SonosCloudAPI.browseContainer(
                     token: token, householdId: householdId,
                     serviceId: serviceId, accountId: accountId,
-                    containerId: playlistItem.id)
+                    containerId: playlistItem.id, count: pageSize)
             case "ALBUM":
                 response = try await SonosCloudAPI.browseAlbum(
                     token: token, householdId: householdId,
@@ -561,15 +575,59 @@ struct PlaylistDetailView: View {
                 response = try await SonosCloudAPI.browsePlaylist(
                     token: token, householdId: householdId,
                     serviceId: serviceId, accountId: accountId,
-                    playlistId: playlistItem.id)
+                    playlistId: playlistItem.id, count: pageSize)
             }
             isLoading = false
+
+            let total = response?.tracks?.total ?? response?.section?.total ?? 0
+            let fetched = response?.tracks?.items?.count ?? response?.section?.items?.count ?? 0
+            if fetched < total {
+                await loadRemainingPages(token: token, householdId: householdId,
+                                         serviceId: serviceId, accountId: accountId,
+                                         fetched: fetched, total: total, pageSize: pageSize)
+            }
+            allPagesLoaded = true
         } catch is CancellationError {
             print("[PlaylistDetail] Load cancelled (tab switch)")
         } catch {
             print("[PlaylistDetail] Load failed: \(error)")
             errorText = error.localizedDescription
             isLoading = false
+        }
+    }
+
+    private func loadRemainingPages(token: String, householdId: String,
+                                     serviceId: String, accountId: String,
+                                     fetched: Int, total: Int, pageSize: Int) async {
+        var offset = fetched
+        while offset < total {
+            do {
+                try Task.checkCancellation()
+                let page: SonosCloudAPI.AlbumBrowseResponse
+                switch playlistItem.cloudType {
+                case "COLLECTION":
+                    page = try await SonosCloudAPI.browseContainer(
+                        token: token, householdId: householdId,
+                        serviceId: serviceId, accountId: accountId,
+                        containerId: playlistItem.id, count: pageSize, offset: offset)
+                default:
+                    page = try await SonosCloudAPI.browsePlaylist(
+                        token: token, householdId: householdId,
+                        serviceId: serviceId, accountId: accountId,
+                        playlistId: playlistItem.id, count: pageSize, offset: offset)
+                }
+                let newItems = page.tracks?.items ?? page.section?.items ?? []
+                if newItems.isEmpty { break }
+                extraTracks.append(contentsOf: newItems)
+                offset += newItems.count
+                print("[PlaylistDetail] Pagination: loaded \(offset)/\(total)")
+            } catch is CancellationError {
+                print("[PlaylistDetail] Pagination cancelled")
+                return
+            } catch {
+                print("[PlaylistDetail] Pagination error at offset \(offset): \(error)")
+                break
+            }
         }
     }
 
@@ -580,6 +638,13 @@ struct PlaylistDetailView: View {
         playingItemId = "play-all"
 
         Task {
+            if let ip = manager.selectedSpeaker?.playbackIP {
+                let current = try? await SonosAPI.getPlayMode(ip: ip)
+                if current?.shuffle == true {
+                    try? await SonosAPI.setPlayMode(ip: ip, shuffle: false,
+                                                    repeat: current?.repeat ?? .off)
+                }
+            }
             await searchManager.playNow(item: playlistItem, manager: manager)
             withAnimation(.easeOut(duration: 0.2)) { playingItemId = nil }
         }
