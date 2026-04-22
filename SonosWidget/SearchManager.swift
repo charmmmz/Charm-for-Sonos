@@ -43,11 +43,16 @@ final class SearchManager {
     var isLoadingServiceDetail = false
 
     private static let enabledKey = "SearchEnabledServices"
+    private static let cachedAccountsKey = "CachedLinkedAccounts"
 
     private var speakerIP: String?
     private var searchTask: Task<Void, Never>?
     private var lastSearchQuery = ""
     private var hasProbed = false
+
+    init() {
+        restoreCachedAccounts()
+    }
 
     func configure(speakerIP: String?) {
         self.speakerIP = speakerIP
@@ -57,6 +62,19 @@ final class SearchManager {
 
     func probeLinkedServices() async {
         guard !hasProbed else { return }
+
+        if !linkedAccounts.isEmpty {
+            print("[Search] Using \(linkedAccounts.count) cached linked accounts")
+            buildServiceIdMapping()
+            hasProbed = true
+            return
+        }
+
+        await fetchLinkedAccounts()
+    }
+
+    /// Network call to refresh linked accounts. Called on first launch or manual refresh.
+    private func fetchLinkedAccounts() async {
         isProbing = true
 
         guard let token = await SonosAuth.shared.validAccessToken(),
@@ -71,12 +89,12 @@ final class SearchManager {
             let accounts = try await SonosCloudAPI.getMusicServiceAccounts(
                 token: token, householdId: householdId)
             linkedAccounts = accounts
+            persistAccounts(accounts)
             print("[Search] Cloud API detected \(accounts.count) linked services:")
             for a in accounts {
                 print("[Search]   \(a.nickname ?? a.serviceId ?? "?") (service-id=\(a.serviceId ?? "?"))")
             }
 
-            // Load saved toggle state, default all detected to enabled
             let saved = UserDefaults.standard.dictionary(forKey: Self.enabledKey) as? [String: Bool] ?? [:]
             for account in accounts {
                 guard let sid = account.serviceId else { continue }
@@ -93,6 +111,26 @@ final class SearchManager {
 
     private func persistToggles() {
         UserDefaults.standard.set(serviceEnabled, forKey: Self.enabledKey)
+    }
+
+    private func persistAccounts(_ accounts: [SonosCloudAPI.CloudMusicServiceAccount]) {
+        if let data = try? JSONEncoder().encode(accounts) {
+            UserDefaults.standard.set(data, forKey: Self.cachedAccountsKey)
+        }
+    }
+
+    private func restoreCachedAccounts() {
+        guard let data = UserDefaults.standard.data(forKey: Self.cachedAccountsKey),
+              let accounts = try? JSONDecoder().decode([SonosCloudAPI.CloudMusicServiceAccount].self, from: data),
+              !accounts.isEmpty else { return }
+
+        linkedAccounts = accounts
+        let saved = UserDefaults.standard.dictionary(forKey: Self.enabledKey) as? [String: Bool] ?? [:]
+        for account in accounts {
+            guard let sid = account.serviceId else { continue }
+            serviceEnabled[sid] = saved[sid] ?? true
+        }
+        print("[Search] Restored \(accounts.count) cached linked accounts")
     }
 
     func setServiceEnabled(serviceId: String, enabled: Bool) {
@@ -113,13 +151,16 @@ final class SearchManager {
 
     func resetProbe() {
         hasProbed = false
-        linkedAccounts = []
+        cloudToLocalSid.removeAll()
+        localToCloudSid.removeAll()
+        cloudServiceUsername.removeAll()
     }
 
     func forceReprobe() async {
         hasProbed = false
         linkedAccounts = []
-        await probeLinkedServices()
+        UserDefaults.standard.removeObject(forKey: Self.cachedAccountsKey)
+        await fetchLinkedAccounts()
     }
 
     // MARK: - Grouped Favorites
@@ -875,6 +916,21 @@ final class SearchManager {
             await manager.loadQueue()
         } catch {
             errorMessage = error.localizedDescription
+        }
+    }
+
+    func addToFavorites(item: BrowseItem, manager: SonosManager) async -> Bool {
+        guard let ip = manager.selectedSpeaker?.playbackIP,
+              let uri = item.uri else { return false }
+        let meta = playbackMetadata(for: item)
+        do {
+            try await SonosAPI.addToFavorites(ip: ip, title: item.title, uri: uri, metadata: meta)
+            print("[Favorites] Added '\(item.title)' to Sonos Favorites")
+            return true
+        } catch {
+            print("[Favorites] Failed to add: \(error)")
+            errorMessage = error.localizedDescription
+            return false
         }
     }
 }

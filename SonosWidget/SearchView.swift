@@ -739,62 +739,77 @@ struct SearchView: View {
         ScrollView(.horizontal, showsIndicators: false) {
             LazyHStack(spacing: 12) {
                 ForEach(items) { item in
-                    let isLoading = playingItemId == item.id
-                    let isDisabled = playingItemId != nil && !isLoading
-
-                    Button {
-                        playItem(item)
-                    } label: {
-                        VStack(alignment: .leading, spacing: 6) {
-                            AsyncImage(url: URL(string: item.albumArtURL ?? "")) { phase in
-                                if let img = phase.image {
-                                    img.resizable().aspectRatio(contentMode: .fill)
-                                } else {
-                                    Rectangle().fill(.quaternary)
-                                        .overlay {
-                                            Image(systemName: item.cloudType == "PLAYLIST"
-                                                  ? "music.note.list" : "opticaldisc")
-                                                .foregroundStyle(.tertiary)
-                                        }
-                                }
-                            }
-                            .frame(width: 140, height: 140)
-                            .clipShape(RoundedRectangle(cornerRadius: 10))
-                            .overlay {
-                                if isLoading {
-                                    RoundedRectangle(cornerRadius: 10)
-                                        .fill(.ultraThinMaterial.opacity(0.85))
-                                        .overlay {
-                                            ProgressView()
-                                                .tint(.white)
-                                                .controlSize(.regular)
-                                        }
-                                        .transition(.opacity)
-                                }
-                            }
-
-                            Text(item.title)
-                                .font(.caption.weight(.medium))
-                                .lineLimit(2)
-
-                            if !item.artist.isEmpty {
-                                Text(item.artist)
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(1)
-                            }
+                    if item.cloudType == "ALBUM" {
+                        NavigationLink {
+                            AlbumDetailView(albumItem: item,
+                                            searchManager: searchManager,
+                                            manager: manager)
+                        } label: {
+                            albumScrollCard(item)
                         }
-                        .frame(width: 140)
-                        .opacity(isDisabled ? 0.4 : 1)
+                        .buttonStyle(.plain)
+                        .contextMenu { itemContextMenu(item) }
+                    } else {
+                        let isLoading = playingItemId == item.id
+                        let isDisabled = playingItemId != nil && !isLoading
+
+                        Button { playItem(item) } label: {
+                            albumScrollCard(item)
+                                .opacity(isDisabled ? 0.4 : 1)
+                                .overlay {
+                                    if isLoading {
+                                        RoundedRectangle(cornerRadius: 10)
+                                            .fill(.ultraThinMaterial.opacity(0.85))
+                                            .frame(width: 140, height: 140)
+                                            .overlay {
+                                                ProgressView()
+                                                    .tint(.white)
+                                                    .controlSize(.regular)
+                                            }
+                                            .transition(.opacity)
+                                    }
+                                }
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(isDisabled)
+                        .animation(.easeInOut(duration: 0.2), value: playingItemId)
+                        .contextMenu { itemContextMenu(item) }
                     }
-                    .buttonStyle(.plain)
-                    .disabled(isDisabled)
-                    .animation(.easeInOut(duration: 0.2), value: playingItemId)
-                    .contextMenu { itemContextMenu(item) }
                 }
             }
             .padding(.horizontal)
         }
+    }
+
+    private func albumScrollCard(_ item: BrowseItem) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            AsyncImage(url: URL(string: item.albumArtURL ?? "")) { phase in
+                if let img = phase.image {
+                    img.resizable().aspectRatio(contentMode: .fill)
+                } else {
+                    Rectangle().fill(.quaternary)
+                        .overlay {
+                            Image(systemName: item.cloudType == "PLAYLIST"
+                                  ? "music.note.list" : "opticaldisc")
+                                .foregroundStyle(.tertiary)
+                        }
+                }
+            }
+            .frame(width: 140, height: 140)
+            .clipShape(RoundedRectangle(cornerRadius: 10))
+
+            Text(item.title)
+                .font(.caption.weight(.medium))
+                .lineLimit(2)
+
+            if !item.artist.isEmpty {
+                Text(item.artist)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+        }
+        .frame(width: 140)
     }
 
     // MARK: - Context Menu

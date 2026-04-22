@@ -116,11 +116,10 @@ struct ArtistDetailView: View {
     }
 
     private func albumCard(_ item: SonosCloudAPI.ArtistSectionItem) -> some View {
-        let isLoading = playingItemId == item.id
-        let isDisabled = playingItemId != nil && !isLoading
-
-        return Button {
-            playAlbum(item)
+        NavigationLink {
+            AlbumDetailView(albumItem: browseItem(from: item),
+                            searchManager: searchManager,
+                            manager: manager)
         } label: {
             VStack(alignment: .leading, spacing: 6) {
                 AsyncImage(url: URL(string: item.images?.tile1x1 ?? "")) { phase in
@@ -137,17 +136,6 @@ struct ArtistDetailView: View {
                 }
                 .aspectRatio(1, contentMode: .fit)
                 .clipShape(RoundedRectangle(cornerRadius: 8))
-                .overlay {
-                    if isLoading {
-                        RoundedRectangle(cornerRadius: 8)
-                            .fill(.ultraThinMaterial.opacity(0.85))
-                            .overlay {
-                                ProgressView()
-                                    .tint(.white)
-                                    .controlSize(.regular)
-                            }
-                    }
-                }
 
                 Text(item.title ?? "")
                     .font(.caption.weight(.medium))
@@ -160,10 +148,32 @@ struct ArtistDetailView: View {
                         .lineLimit(1)
                 }
             }
-            .opacity(isDisabled ? 0.4 : 1)
         }
         .buttonStyle(.plain)
-        .disabled(isDisabled)
+    }
+
+    private func browseItem(from item: SonosCloudAPI.ArtistSectionItem) -> BrowseItem {
+        let objectId = item.resource?.id?.objectId ?? ""
+        let serviceId = item.resource?.id?.serviceId
+        let accountId = item.resource?.id?.accountId
+
+        return BrowseItem(
+            id: objectId,
+            title: item.title ?? "",
+            artist: artistName,
+            album: item.title ?? "",
+            albumArtURL: item.images?.tile1x1,
+            uri: serviceId.flatMap { sid in
+                accountId.flatMap { aid in
+                    searchManager.buildPlayableURIPublic(
+                        objectId: objectId, serviceId: sid,
+                        accountId: aid, type: "ALBUM")
+                }
+            },
+            isContainer: true,
+            serviceId: serviceId.flatMap { searchManager.localSid(forCloudServiceId: $0) },
+            cloudType: "ALBUM"
+        )
     }
 
     // MARK: - Data Loading
@@ -206,34 +216,6 @@ struct ArtistDetailView: View {
     }
 
     // MARK: - Playback
-
-    private func playAlbum(_ item: SonosCloudAPI.ArtistSectionItem) {
-        guard playingItemId == nil,
-              let objectId = item.resource?.id?.objectId,
-              let serviceId = item.resource?.id?.serviceId,
-              let accountId = item.resource?.id?.accountId else { return }
-
-        playingItemId = item.id
-
-        let browseItem = BrowseItem(
-            id: objectId,
-            title: item.title ?? "",
-            artist: artistName,
-            album: item.title ?? "",
-            albumArtURL: item.images?.tile1x1,
-            uri: searchManager.buildPlayableURIPublic(
-                objectId: objectId, serviceId: serviceId,
-                accountId: accountId, type: "ALBUM"),
-            isContainer: true,
-            serviceId: searchManager.localSid(forCloudServiceId: serviceId),
-            cloudType: "ALBUM"
-        )
-
-        Task {
-            await searchManager.playNow(item: browseItem, manager: manager)
-            withAnimation(.easeOut(duration: 0.2)) { playingItemId = nil }
-        }
-    }
 
     private func startStation(_ action: SonosCloudAPI.CustomAction) {
         guard playingItemId == nil else { return }
