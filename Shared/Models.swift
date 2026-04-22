@@ -62,6 +62,13 @@ enum PlaybackSource: String, Codable, Sendable {
         }
     }
 
+    var isStreamingService: Bool {
+        switch self {
+        case .spotify, .appleMusic, .amazonMusic, .tidal, .youtubeMusic: return true
+        default: return false
+        }
+    }
+
     nonisolated static func from(trackURI: String) -> PlaybackSource {
         let uri = trackURI.lowercased()
 

@@ -822,7 +822,16 @@ final class SonosManager {
     private func enrichAudioQualityFromCloud() async {
         let trackKey = trackInfo.map { "\($0.title ?? "")|\($0.artist ?? "")|\($0.albumArtURL ?? "")" }
 
-        guard trackInfo?.audioQuality == nil,
+        let needsEnrich: Bool = {
+            guard let quality = trackInfo?.audioQuality else { return true }
+            let codec = quality.codec.lowercased()
+            let isGeneric = codec == "mp3" || codec == "mpeg" || codec == "aac"
+                || codec.contains("octet-stream")
+            let isStreamingSource = trackInfo?.source.isStreamingService == true
+            return isGeneric && isStreamingSource
+        }()
+
+        guard needsEnrich,
               !isEnrichingQuality,
               transportState == .playing,
               SonosAuth.shared.isLoggedIn else { return }
