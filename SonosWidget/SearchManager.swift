@@ -357,25 +357,24 @@ final class SearchManager {
     }
 
     /// Returns (scheme, fileExtension, flags) for track URIs.
-    /// Apple Music AAC → .mp4 + flags 8232 (matching official Sonos app behavior).
+    /// Matches official Sonos app: uses mimeType from the Cloud `defaults` field
+    /// to pick extension (.mp4 for AAC) and flags; falls back to .unknown + flags=0.
     private func trackURIComponents(localSid: Int, mimeType: String?) -> (String, String, Int) {
         switch localSid {
         case 12: // Spotify
             return ("x-sonos-spotify", "", 8224)
         default:
-            let ext = extensionForMime(mimeType)
-            let flags = ext.isEmpty ? 8224 : 8232
+            let (ext, flags) = extensionAndFlags(for: mimeType)
             return ("x-sonos-http", ext, flags)
         }
     }
 
-    private func extensionForMime(_ mimeType: String?) -> String {
+    private func extensionAndFlags(for mimeType: String?) -> (String, Int) {
         switch mimeType {
-        case "audio/aac", "audio/mp4", "audio/x-m4a": return ".mp4"
-        case "audio/mpeg", "audio/mp3": return ".mp3"
-        case "audio/ogg": return ".ogg"
-        case "audio/flac": return ".flac"
-        default: return ""
+        case "audio/aac", "audio/mp4", "audio/x-m4a": return (".mp4", 8232)
+        case "audio/mpeg", "audio/mp3": return (".mp3", 8224)
+        case "audio/flac": return (".flac", 8224)
+        default: return (".unknown", 0)
         }
     }
 
@@ -404,15 +403,54 @@ final class SearchManager {
         return nil
     }
 
-    /// Build DIDL metadata for Cloud search results.
-    /// Uses the SMAPI desc tag with the correct account serial number (sn) so Sonos
-    /// can authenticate with the music service when resolving the track.
+    /// Build DIDL metadata for Cloud search results matching the official Sonos app format.
+    /// Key elements: desc tag uses Cloud service ID + account hash, item id has
+    /// `1003{flagsHex}` prefix, and upnp:class has `.#SongTitleWithArtistAndAlbum`.
     private func buildCloudDIDLMetadata(item: BrowseItem, localSid: Int, accountId: String) -> String {
-        let desc = "SA_RINCON\(localSid)_X_#Svc\(localSid)-\(accountId)-Token"
+        let cloudSid = localToCloudSid[localSid] ?? String(localSid)
+        let username = cloudServiceUsername[cloudSid] ?? "X_#Svc\(cloudSid)-0-Token"
+        let desc = "SA_RINCON\(cloudSid)_\(username)"
         print("[Playback] desc=\(desc)")
-        return SonosAPI.buildDIDLMetadata(
-            itemId: item.id, title: item.title, artist: item.artist,
-            album: item.album, albumArtURL: item.albumArtURL, serviceId: localSid, desc: desc)
+
+        let flags = extractFlagsFromURI(item.uri)
+        let flagsHex = String(format: "%04x", flags)
+        let encodedObjId = item.id.replacingOccurrences(of: ":", with: "%3a")
+        let itemId = "1003\(flagsHex)\(encodedObjId)"
+
+        let t = SonosAPI.escapeXML(item.title)
+        let a = SonosAPI.escapeXML(item.artist)
+        let al = SonosAPI.escapeXML(item.album)
+        let art = SonosAPI.escapeXML(item.albumArtURL ?? "")
+
+        return """
+        <DIDL-Lite xmlns:dc="http://purl.org/dc/elements/1.1/" \
+        xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/" \
+        xmlns:r="urn:schemas-rinconnetworks-com:metadata-1-0/" \
+        xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/">\
+        <item id="\(itemId)" parentID="" restricted="true">\
+        <dc:title>\(t)</dc:title>\
+        <upnp:class>object.item.audioItem.musicTrack</upnp:class>\
+        <upnp:album>\(al)</upnp:album>\
+        <dc:creator>\(a)</dc:creator>\
+        <upnp:albumArtURI>\(art)</upnp:albumArtURI>\
+        <r:albumArtist>\(a)</r:albumArtist>\
+        <desc id="cdudn" nameSpace="urn:schemas-rinconnetworks-com:metadata-1-0/">\
+        \(desc)</desc>\
+        </item></DIDL-Lite>
+        """
+    }
+
+    private func extractFlagsFromURI(_ uri: String?) -> Int {
+        guard let uri = uri,
+              let range = uri.range(of: "flags=") else { return 0 }
+        let after = uri[range.upperBound...]
+        let flagStr: Substring
+        if let ampIdx = after.firstIndex(of: "&") {
+            flagStr = after[..<ampIdx]
+        } else {
+            flagStr = after
+        }
+        return Int(flagStr) ?? 0
     }
 
     /// Inject `upnp:albumArtURI` into DIDL metadata when not already present.
