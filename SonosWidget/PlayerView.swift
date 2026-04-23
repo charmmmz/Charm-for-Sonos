@@ -525,6 +525,14 @@ private struct SpeakerGroupCardView: View {
                         }
                     }
                 }
+                // Without this the outer Button only counts taps on the
+                // rendered subviews (art / text / play button); the
+                // `Spacer()` gap between title and the circular play
+                // button silently swallows touches, so tapping the
+                // empty middle of the card does nothing. Forcing a
+                // rectangular hit-test region makes the whole row
+                // switch speakers as expected.
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .padding(.horizontal, 14)
@@ -818,8 +826,13 @@ struct NowPlayingOverlay: View {
 
     private func portraitLayout(geo: GeometryProxy) -> some View {
         let h = geo.size.height
-        let artSz = min(geo.size.width - 64, h * 0.45)
-        let s = h / 760
+        // Clamp to a safe positive size — during the player's open/close
+        // animation `geo.size` can briefly report 0 or values smaller than
+        // our 64pt horizontal inset, producing a negative `artSz` that
+        // SwiftUI complains about ("Invalid frame dimension"). The lower
+        // bound never renders in practice; it just keeps the frame valid.
+        let artSz = max(1, min(geo.size.width - 64, h * 0.45))
+        let s = max(0.5, h / 760)
 
         return VStack(spacing: 0) {
             dragHandle
