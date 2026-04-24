@@ -837,12 +837,35 @@ enum SonosCloudAPI {
 
         struct Service: Decodable {
             let name: String?
+            /// Some households return `service.id` as a bare string like
+            /// `"52231"` (the service type), others as the richer
+            /// `universalMusicObjectId` dictionary. Decode both shapes
+            /// into the same struct so either kind of favorite list
+            /// parses successfully.
             let id: ServiceId?
 
             struct ServiceId: Decodable {
                 let accountId: String?
                 let objectId: String?
                 let serviceId: String?
+
+                init(from decoder: Decoder) throws {
+                    if let container = try? decoder.singleValueContainer(),
+                       let str = try? container.decode(String.self) {
+                        self.accountId = nil
+                        self.objectId = nil
+                        self.serviceId = str
+                        return
+                    }
+                    let c = try decoder.container(keyedBy: CodingKeys.self)
+                    self.accountId = try c.decodeIfPresent(String.self, forKey: .accountId)
+                    self.objectId = try c.decodeIfPresent(String.self, forKey: .objectId)
+                    self.serviceId = try c.decodeIfPresent(String.self, forKey: .serviceId)
+                }
+
+                private enum CodingKeys: String, CodingKey {
+                    case accountId, objectId, serviceId
+                }
             }
         }
 

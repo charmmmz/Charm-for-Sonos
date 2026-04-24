@@ -806,9 +806,54 @@ struct NowPlayingOverlay: View {
         .onChange(of: manager.trackInfo?.trackURI) { _, newURI in
             guard let uri = newURI, uri != lastFetchedTrackURI else { return }
             lastFetchedTrackURI = uri
-            Task { await fetchNowPlaying(trackURI: uri) }
+            Task {
+                // Keep SearchManager's speaker IP in sync before probing —
+                // if the selected speaker just became available, this lets
+                // `ensureMusicServicesPopulated` reach the speaker.
+                searchManager.configure(speakerIP: manager.selectedSpeaker?.playbackIP)
+                // Ensure the local-sid → cloud-service-id table is built
+                // before we ask NowPlaying for artist / album ids.
+                // Otherwise `fetchNowPlaying` bails early and the
+                // artist / album text renders as plain Text (non-tappable)
+                // until the user visits the Browse tab.
+                await searchManager.probeLinkedServices()
+                await fetchNowPlaying(trackURI: uri)
+            }
+        }
+        .onChange(of: manager.selectedSpeaker?.playbackIP) { _, newIP in
+            // Selected speaker's IP just resolved (discovery finished,
+            // user switched speakers, etc.) — reconfigure SearchManager
+            // and (re-)build the sid mapping using the newly reachable
+            // host, unblocking the artist / album links.
+            guard let ip = newIP, !ip.isEmpty else { return }
+            searchManager.configure(speakerIP: ip)
+            Task {
+                if !searchManager.hasFinishedProbing {
+                    await searchManager.probeLinkedServices()
+                } else {
+                    await searchManager.refreshServiceIdMappingIfNeeded()
+                }
+                // Mapping may have just become available. If the
+                // initial `fetchNowPlaying` ran with an empty mapping
+                // and bailed, the `onChange(trackURI)` above won't
+                // retry because `lastFetchedTrackURI` is already set
+                // to the current URI. Force a retry here so the
+                // artist / album links pick up without the user
+                // having to tap a new song first.
+                if nowPlayingInfo == nil, let uri = manager.trackInfo?.trackURI {
+                    await fetchNowPlaying(trackURI: uri)
+                }
+            }
         }
         .task {
+            // Feed SearchManager the current speaker IP *before* we probe
+            // linked services so `ensureMusicServicesPopulated` has a
+            // reachable host to hit — otherwise the local-sid ↔ cloud-sid
+            // mapping never builds on first launch (user never visits
+            // Browse), and the artist / album NavigationLinks below end
+            // up non-tappable until the user flips to the Browse tab.
+            searchManager.configure(speakerIP: manager.selectedSpeaker?.playbackIP)
+            await searchManager.probeLinkedServices()
             if let uri = manager.trackInfo?.trackURI, uri != lastFetchedTrackURI {
                 lastFetchedTrackURI = uri
                 await fetchNowPlaying(trackURI: uri)

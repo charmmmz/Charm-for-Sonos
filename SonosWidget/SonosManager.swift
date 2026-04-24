@@ -1155,6 +1155,22 @@ final class SonosManager {
             durationSeconds = trackInfo?.durationSeconds ?? 0
             positionFetchedAt = Date()
 
+            // Aggressive cloud-first: for first-party streaming services
+            // (Apple Music / Spotify / Amazon / Tidal / YouTube Music),
+            // Sonos Cloud's `playbackMetadata.quality` is the authoritative
+            // source — its `immersive` / `lossless` / `bitDepth` fields
+            // correctly flag Dolby Atmos tracks that UPnP misreports as
+            // "ALAC 24/48 Hi-Res Lossless", and also catch HLS streams that
+            // UPnP marks lossless even when the account tier isn't.
+            //
+            // Drop the UPnP-derived guess up-front so the cache-restore and
+            // Cloud-enrich paths below fill it in cleanly. NetEase etc. are
+            // SMAPI-backed and Sonos Cloud doesn't populate their `quality`,
+            // so we keep UPnP's value there as the only signal.
+            if SonosAuth.shared.isLoggedIn, isCloudQualityAuthoritative(trackInfo?.source) {
+                trackInfo?.audioQuality = nil
+            }
+
             // Restore cached cloud quality if UPnP didn't provide one and the track matches.
             if trackInfo?.audioQuality == nil,
                let cached = cachedCloudQuality,
@@ -1496,11 +1512,36 @@ final class SonosManager {
         }
     }
 
-    /// If UPnP didn't provide audio quality, fetch it from the Sonos Cloud API.
+    /// Whether Sonos Cloud's `playbackMetadata.quality` is trustworthy for a
+    /// given playback source. First-party streaming services (Sonos-owned
+    /// ingest pipeline) plus NetEase Cloud Music — verified to populate
+    /// `quality` via Sonos Cloud — all qualify. Local library / radio /
+    /// AirPlay / Line-In have no cloud representation so UPnP stays the
+    /// only signal there.
+    private func isCloudQualityAuthoritative(_ source: PlaybackSource?) -> Bool {
+        switch source {
+        case .spotify, .appleMusic, .amazonMusic, .tidal, .youtubeMusic, .neteaseMusic:
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// Pull authoritative audio-quality info from the Sonos Cloud API.
+    /// With `isCloudQualityAuthoritative(...)` wiping UPnP up-front for
+    /// first-party streaming services, this is effectively the *only* path
+    /// that sets `audioQuality` for Apple Music / Spotify / etc. — making
+    /// Cloud the single source of truth as long as the user is logged in.
     private func enrichAudioQualityFromCloud() async {
         let trackKey = trackInfo.map { "\($0.title ?? "")|\($0.artist ?? "")|\($0.albumArtURL ?? "")" }
 
         let needsEnrich: Bool = {
+            // Logged in → Sonos Cloud is authoritative. Always refresh once
+            // per track change (throttled below by the same-track cooldown)
+            // so we catch Dolby Atmos, lossless flags, etc. that UPnP
+            // systematically mis-labels.
+            if SonosAuth.shared.isLoggedIn { return true }
+
             guard let quality = trackInfo?.audioQuality else { return true }
             let codec = quality.codec.lowercased()
             return codec == "mp3" || codec == "mpeg" || codec == "aac"

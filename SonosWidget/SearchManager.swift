@@ -53,6 +53,13 @@ final class SearchManager {
 
     private static let enabledKey = "SearchEnabledServices"
     private static let cachedAccountsKey = "CachedLinkedAccounts"
+    /// Persisted `cloudToLocalSid` / `localToCloudSid` mapping. Built from
+    /// the intersection of the Cloud API's linked-services list and the
+    /// LAN `listMusicServices` catalog. Caching lets subsequent launches
+    /// resolve cloud service ids from a local sid *before* the user opens
+    /// Browse — the player's artist / album NavigationLinks need this
+    /// mapping to render as tappable links.
+    private static let sidMappingKey = "CloudLocalSidMapping"
     private static let recentlyPlayedKey = "RecentlyPlayedItems"
 
     private var speakerIP: String?
@@ -66,6 +73,7 @@ final class SearchManager {
     init() {
         restoreCachedAccounts()
         restoreRecentlyPlayed()
+        restoreSidMapping()
     }
 
     func configure(speakerIP: String?) {
@@ -79,12 +87,30 @@ final class SearchManager {
 
         if !linkedAccounts.isEmpty {
             SonosLog.debug(.search, "Using \(linkedAccounts.count) cached linked accounts")
+            await ensureMusicServicesPopulated()
             buildServiceIdMapping()
             hasProbed = true
             return
         }
 
         await fetchLinkedAccounts()
+    }
+
+    /// Opportunistically fetch the UPnP `listMusicServices` catalog when
+    /// we have a reachable LAN IP and the catalog isn't already loaded.
+    /// This is what unblocks `buildServiceIdMapping` → `localToCloudSid`
+    /// on first launch (the player's artist / album links need that
+    /// mapping the very first time the app is opened, before the user
+    /// has ever visited the Browse tab, which is where this fetch used
+    /// to be gated).
+    private func ensureMusicServicesPopulated() async {
+        guard musicServices.isEmpty,
+              let ip = speakerIP,
+              !ip.isEmpty else { return }
+        if let fetched = try? await SonosAPI.listMusicServices(ip: ip), !fetched.isEmpty {
+            musicServices = fetched
+            SonosLog.debug(.search, "Proactively fetched \(fetched.count) music services for sid mapping")
+        }
     }
 
     /// Network call to refresh linked accounts. Called on first launch or manual refresh.
@@ -118,6 +144,7 @@ final class SearchManager {
             SonosLog.error(.search, "Cloud API detection failed: \(error)")
         }
 
+        await ensureMusicServicesPopulated()
         buildServiceIdMapping()
         hasProbed = true
         isProbing = false
@@ -205,6 +232,18 @@ final class SearchManager {
         cloudServiceUsername.removeAll()
     }
 
+    /// Re-run the local-sid ↔ cloud-sid build step using the current
+    /// `speakerIP`. Safe to call any number of times — no-ops when the
+    /// mapping is already populated and the LAN catalog has been loaded.
+    /// Used when the selected speaker's IP becomes available *after* the
+    /// initial `probeLinkedServices()` run, which would otherwise leave
+    /// the mapping empty until the user visits the Browse tab.
+    func refreshServiceIdMappingIfNeeded() async {
+        if !cloudToLocalSid.isEmpty { return }
+        await ensureMusicServicesPopulated()
+        buildServiceIdMapping()
+    }
+
     func forceReprobe() async {
         hasProbed = false
         linkedAccounts = []
@@ -277,6 +316,24 @@ final class SearchManager {
         if !sidNameMap.isEmpty {
             SharedStorage.serviceNamesByLocalSid = sidNameMap
         }
+        persistSidMapping()
+    }
+
+    private func persistSidMapping() {
+        guard !cloudToLocalSid.isEmpty else { return }
+        // Shape: { "<cloudSid>": <localSid> } — identical to cloudToLocalSid,
+        // just string-keyed for plist-safe UserDefaults storage.
+        let encodable = Dictionary(uniqueKeysWithValues:
+            cloudToLocalSid.map { ($0.key, $0.value) })
+        UserDefaults.standard.set(encodable, forKey: Self.sidMappingKey)
+    }
+
+    private func restoreSidMapping() {
+        guard let dict = UserDefaults.standard.dictionary(forKey: Self.sidMappingKey)
+                as? [String: Int], !dict.isEmpty else { return }
+        cloudToLocalSid = dict
+        localToCloudSid = Dictionary(uniqueKeysWithValues: dict.map { ($0.value, $0.key) })
+        SonosLog.debug(.search, "Restored \(dict.count) cached sid mappings")
     }
 
     func localSid(forCloudServiceId cloudId: String) -> Int? {
@@ -644,10 +701,19 @@ final class SearchManager {
         errorMessage = nil
 
         if cloudMode, let ctx = cloudContext {
-            favorites = (try? await cloudFavoritesAsBrowseItems(context: ctx)) ?? []
+            // Log the failure path explicitly — silently swallowing the
+            // error is why off-LAN users see a blank Browse tab with
+            // zero diagnostic breadcrumbs.
+            do {
+                favorites = try await cloudFavoritesAsBrowseItems(context: ctx)
+                SonosLog.info(.favorites, "Cloud favorites: \(favorites.count) loaded")
+            } catch {
+                SonosLog.error(.favorites, "Cloud favorites load failed: \(error)")
+                favorites = []
+            }
             playlists = []
             radio = []
-        } else if let ip = speakerIP {
+        } else if let ip = speakerIP, !ip.isEmpty {
             async let favs = tryBrowse { try await SonosAPI.browseFavorites(ip: ip) }
             async let lists = tryBrowse { try await SonosAPI.browsePlaylists(ip: ip) }
             async let stations = tryBrowse { try await SonosAPI.browseRadio(ip: ip) }
@@ -731,10 +797,13 @@ final class SearchManager {
             if !hasProbed { await probeLinkedServices() }
             guard !Task.isCancelled else { return }
 
-            if musicServices.isEmpty, let ip = speakerIP {
-                musicServices = (try? await SonosAPI.listMusicServices(ip: ip)) ?? []
-                buildServiceIdMapping()
-            }
+            // `musicServices` is the UPnP-sourced service catalog. It's
+            // only needed for local-sid ↔ cloud-sid mapping (NowPlaying
+            // badges, etc.) — the Cloud search endpoint itself works
+            // purely off `activeServiceIds`. Skip the fetch entirely:
+            // when we're off-LAN the saved IP blocks the whole search
+            // for the UPnP timeout (~10s), and on LAN the Browse tab
+            // already populated this table via `loadBrowseContent`.
 
             let serviceIds = activeServiceIds
             guard !serviceIds.isEmpty else {
@@ -1560,21 +1629,72 @@ final class SearchManager {
         }
     }
 
-    /// Check if an item is already in Sonos Favorites by matching URI or title.
+    /// Check if an item is already in Sonos Favorites by matching URI or
+    /// title, scoped to the same streaming service. The user can favorite
+    /// "Taylor Swift" from Apple Music and Spotify as two separate
+    /// entries, and we must not conflate them.
     func isFavorited(_ item: BrowseItem) -> Bool {
         findFavorite(matching: item) != nil
     }
 
+    /// Best-effort canonical service hint for a favorite or browse item.
+    /// Returns a stable string per streaming service so favorites from
+    /// different services don't collide on name. Tries, in order:
+    ///   1. Explicit `serviceId` (set by `makeCloudItem` for factory items).
+    ///   2. `sid=X` extracted from the item's URI query string (works for
+    ///      anything with a playable `x-rincon-cpcontainer:` URI).
+    ///   3. `SA_RINCON<N>` token from `resMD` / `metaXML` (the service
+    ///      UDN Sonos embeds in favorite descriptors — covers shortcut
+    ///      artist favorites whose outer `<res>` is empty).
+    ///   4. Numeric prefix of the inner `<item id="10052064artist%3A…">`
+    ///      attribute (Apple Music = 10052064, Spotify has its own, etc.).
+    /// Returns `nil` only when we genuinely can't tell — in that case the
+    /// caller should fall back to name/URI matching without service
+    /// scoping, mirroring the old behavior for legacy entries.
+    private static func serviceSignature(_ item: BrowseItem) -> String? {
+        if let sid = item.serviceId { return "sid:\(sid)" }
+        if let uri = item.uri, let q = uri.split(separator: "?").last {
+            for param in q.split(separator: "&") {
+                let kv = param.split(separator: "=", maxSplits: 1)
+                if kv.count == 2, kv[0] == "sid" { return "sid:\(kv[1])" }
+            }
+        }
+        for blob in [item.resMD, item.metaXML].compactMap({ $0 }) {
+            if let range = blob.range(of: "SA_RINCON") {
+                let digits = blob[range.upperBound...].prefix { $0.isNumber }
+                if !digits.isEmpty { return "rincon:\(digits)" }
+            }
+        }
+        if let resMD = item.resMD, let idRange = resMD.range(of: "id=\"") {
+            let digits = resMD[idRange.upperBound...].prefix { $0.isNumber }
+            if digits.count >= 6 { return "prefix:\(digits)" }
+        }
+        return nil
+    }
+
     private func findFavorite(matching item: BrowseItem) -> BrowseItem? {
+        let itemSig = Self.serviceSignature(item)
+        // Service-aware predicate: if we have signatures for both sides,
+        // reject mismatches outright so "Taylor Swift on Apple Music"
+        // doesn't look favorited because "Taylor Swift on Spotify" is.
+        // If either side lacks a signature (legacy UPnP-sourced items,
+        // unknown service), don't veto — name/URI match still applies.
+        let sigOK: (BrowseItem) -> Bool = { fav in
+            guard let a = itemSig, let b = Self.serviceSignature(fav) else { return true }
+            return a == b
+        }
+
         if let uri = item.uri {
             let normalizedURI = uri.split(separator: "?").first.map(String.init) ?? uri
             if let match = favorites.first(where: { fav in
-                guard let favURI = fav.uri else { return false }
+                guard sigOK(fav), let favURI = fav.uri else { return false }
                 let normalizedFav = favURI.split(separator: "?").first.map(String.init) ?? favURI
                 return normalizedFav == normalizedURI
             }) { return match }
         }
-        return favorites.first { $0.title == item.title && $0.artist == item.artist }
+        return favorites.first {
+            sigOK($0) && $0.title == item.title && $0.artist == item.artist
+        }
     }
 
     private func refreshFavorites(ip: String) async {

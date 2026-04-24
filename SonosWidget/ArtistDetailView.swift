@@ -115,10 +115,20 @@ struct ArtistDetailView: View {
                 .font(.title2.bold())
                 .multilineTextAlignment(.center)
 
+            // Unified streaming-service chip — same component the
+            // now-playing view and widget use — instead of a plain
+            // "Apple Music" / "Spotify" / "网易云音乐" text line. Falls
+            // back silently to nothing if we can't map the provider
+            // name to a known source.
             if let provider = response?.providerInfo?.name {
-                Text(provider)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                let source = PlaybackSource.from(serviceName: provider)
+                if source != .unknown {
+                    SourceBadgeView(source: source, tintColor: nil)
+                } else {
+                    Text(provider)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
         }
         .padding(.top, 24)
@@ -226,20 +236,7 @@ struct ArtistDetailView: View {
                             manager: manager)
         } label: {
             VStack(alignment: .leading, spacing: 6) {
-                AsyncImage(url: URL(string: album.albumArtURL ?? "")) { phase in
-                    if let img = phase.image {
-                        img.resizable().aspectRatio(contentMode: .fill)
-                    } else {
-                        RoundedRectangle(cornerRadius: 8).fill(.quaternary)
-                            .overlay {
-                                Image(systemName: "opticaldisc")
-                                    .font(.title)
-                                    .foregroundStyle(.tertiary)
-                            }
-                    }
-                }
-                .aspectRatio(1, contentMode: .fit)
-                .clipShape(RoundedRectangle(cornerRadius: 8))
+                squareAlbumArt(url: album.albumArtURL)
 
                 Text(album.title)
                     .font(.subheadline.weight(.medium))
@@ -269,20 +266,7 @@ struct ArtistDetailView: View {
                             manager: manager)
         } label: {
             VStack(alignment: .leading, spacing: 6) {
-                AsyncImage(url: URL(string: item.images?.tile1x1 ?? "")) { phase in
-                    if let img = phase.image {
-                        img.resizable().aspectRatio(contentMode: .fill)
-                    } else {
-                        RoundedRectangle(cornerRadius: 8).fill(.quaternary)
-                            .overlay {
-                                Image(systemName: "opticaldisc")
-                                    .font(.title)
-                                    .foregroundStyle(.tertiary)
-                            }
-                    }
-                }
-                .aspectRatio(1, contentMode: .fit)
-                .clipShape(RoundedRectangle(cornerRadius: 8))
+                squareAlbumArt(url: item.images?.tile1x1)
 
                 Text(item.title ?? "")
                     .font(.caption.weight(.medium))
@@ -297,6 +281,31 @@ struct ArtistDetailView: View {
             }
         }
         .buttonStyle(.plain)
+    }
+
+    /// Always-1:1 album thumbnail. Uses `Color.clear` as the aspect-ratio
+    /// anchor and overlays the AsyncImage on top, so cells stay perfectly
+    /// aligned even when the service returns covers with non-square
+    /// aspect ratios (common on NetEase / user-uploaded art). Non-square
+    /// covers get centre-cropped instead of reshaping the grid.
+    private func squareAlbumArt(url: String?) -> some View {
+        Color.clear
+            .aspectRatio(1, contentMode: .fit)
+            .overlay {
+                AsyncImage(url: URL(string: url ?? "")) { phase in
+                    if let img = phase.image {
+                        img.resizable().aspectRatio(contentMode: .fill)
+                    } else {
+                        Rectangle().fill(.quaternary)
+                            .overlay {
+                                Image(systemName: "opticaldisc")
+                                    .font(.title)
+                                    .foregroundStyle(.tertiary)
+                            }
+                    }
+                }
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 
     private func browseItem(from item: SonosCloudAPI.ArtistSectionItem) -> BrowseItem {

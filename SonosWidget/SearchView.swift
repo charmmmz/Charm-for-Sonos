@@ -79,6 +79,14 @@ struct SearchView: View {
                 // come from. Re-load so the list matches the active backend.
                 Task { await loadBrowseForCurrentBackend() }
             }
+            .onChange(of: manager.currentCloudGroupId) { _, gid in
+                // Cloud group id resolves asynchronously after the backend
+                // flips to .cloud — if the Browse tab was already on screen,
+                // the initial `loadBrowseForCurrentBackend()` call took the
+                // LAN fallback with an empty IP and silently left the page
+                // blank. Re-fire as soon as the id is ready.
+                if gid != nil { Task { await loadBrowseForCurrentBackend() } }
+            }
             .confirmationDialog("Start Station",
                                 isPresented: $searchManager.showStationPicker,
                                 titleVisibility: .visible) {
@@ -105,16 +113,33 @@ struct SearchView: View {
     /// Dispatches Browse-tab content loading based on whether we're LAN or
     /// remote. In remote mode we hand SearchManager a cloud context so it can
     /// source Sonos Favorites from the Control API's `listFavorites` endpoint.
+    ///
+    /// Important: never fall through to the LAN path while we're in cloud
+    /// mode — `SonosAPI.browseFavorites(ip: "")` would just time out and
+    /// leave the page blank. When cloud prerequisites (token, household id,
+    /// group id) aren't ready yet, we bail and rely on the `onChange`
+    /// handlers above to re-fire once they resolve.
     private func loadBrowseForCurrentBackend() async {
-        if manager.transportBackend == .cloud,
-           let token = SonosAuth.shared.cachedAccessToken,
-           let householdId = SonosAuth.shared.householdId,
-           let gid = manager.currentCloudGroupId {
+        switch manager.transportBackend {
+        case .cloud:
+            guard let token = await SonosAuth.shared.validAccessToken(),
+                  let householdId = SonosAuth.shared.householdId else { return }
+            // Group id usually resolves shortly after the backend flips —
+            // kick a resolve if we don't have it yet so the Browse tab
+            // doesn't sit empty waiting for the next poll.
+            if manager.currentCloudGroupId == nil {
+                await manager.resolveCloudGroupId()
+            }
+            guard let gid = manager.currentCloudGroupId else { return }
             await searchManager.loadBrowseContent(
                 cloudMode: true,
                 cloudContext: .init(token: token, householdId: householdId, groupId: gid))
-        } else {
+        case .lan:
             await searchManager.loadBrowseContent()
+        case .unknown:
+            // Backend probe hasn't finished yet — `onChange(transportBackend)`
+            // re-triggers this func once it flips to .lan or .cloud.
+            return
         }
     }
 
@@ -837,10 +862,6 @@ struct SearchView: View {
                                 .font(.caption.weight(.medium))
                                 .lineLimit(2)
                                 .multilineTextAlignment(.center)
-
-                            Text("Artist")
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
                         }
                         .frame(width: 120)
                     }
