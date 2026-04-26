@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct SearchView: View {
     @Bindable var manager: SonosManager
@@ -410,7 +411,11 @@ struct SearchView: View {
 
     /// Build a BrowseItem suitable for AlbumDetailView from a Favorite.
     private func albumNavItem(for item: BrowseItem) -> BrowseItem? {
-        if item.cloudType == "ALBUM" { return item }
+        if item.cloudType == "ALBUM" {
+            // Cloud `listFavorites` rows and shortcut favorites can omit a top-level
+            // playable URI; resolve the same way as add-to-favorites.
+            return searchManager.browseItemWithResolvedFavoriteURI(item) ?? item
+        }
         guard let ids = searchManager.parseCloudIds(from: item) else { return nil }
         var nav = searchManager.makeAlbumItem(
             objectId: ids.objectId, title: item.title, artist: item.artist,
@@ -424,7 +429,9 @@ struct SearchView: View {
 
     /// Build a BrowseItem suitable for ArtistDetailView from a Favorite.
     private func artistNavItem(for item: BrowseItem) -> BrowseItem? {
-        if item.cloudType == "ARTIST" { return item }
+        if item.cloudType == "ARTIST" {
+            return searchManager.browseItemWithResolvedFavoriteURI(item) ?? item
+        }
         guard let ids = searchManager.parseCloudIds(from: item) else {
             SonosLog.debug(.navItem, "artistNavItem parseCloudIds failed for '\(item.title)' uri=\(item.uri ?? "nil") resMD=\(item.resMD?.prefix(200) ?? "nil")")
             return nil
@@ -435,7 +442,9 @@ struct SearchView: View {
     }
 
     private func playlistNavItem(for item: BrowseItem) -> BrowseItem? {
-        if item.cloudType == "PLAYLIST" { return item }
+        if item.cloudType == "PLAYLIST" {
+            return searchManager.browseItemWithResolvedFavoriteURI(item) ?? item
+        }
         guard let ids = searchManager.parseCloudIds(from: item) else { return nil }
         var nav = searchManager.makePlaylistItem(
             objectId: ids.objectId, title: item.title, artist: item.artist,
@@ -1111,6 +1120,88 @@ struct SearchView: View {
     }
 }
 
+// MARK: - Favorite grid cover (URLSession)
+
+/// Replaces `AsyncImage`, which could fail to repaint in `LazyVGrid` + `NavigationLink`
+/// labels. `URLSession` + `UIImage` state is reliable; the grid layout itself is
+/// unchanged (two flexible columns, same as before the workaround).
+private enum FavoriteCoverArtCache {
+    static let memory = NSCache<NSString, UIImage>()
+}
+
+private struct FavoriteCoverImageView: View {
+    let itemId: String
+    let imageURLString: String?
+    let placeholderIcon: String
+
+    @State private var image: UIImage?
+    @State private var didFail = false
+
+    private var resolvedURL: URL? {
+        guard var s = imageURLString?.trimmingCharacters(in: .whitespacesAndNewlines), !s.isEmpty else { return nil }
+        if let u = URL(string: s) { return u }
+        return URL(string: s, encodingInvalidCharacters: true)
+    }
+
+    private var taskIdentity: String { "\(itemId)|\(imageURLString ?? "")" }
+
+    var body: some View {
+        Group {
+            if let image {
+                Image(uiImage: image)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+            } else if didFail || resolvedURL == nil {
+                Rectangle()
+                    .fill(.quaternary)
+                    .overlay {
+                        Image(systemName: placeholderIcon)
+                            .foregroundStyle(.tertiary)
+                    }
+            } else {
+                Rectangle()
+                    .fill(.quaternary)
+                    .overlay { ProgressView().tint(.secondary) }
+            }
+        }
+        .task(id: taskIdentity) { await loadImage() }
+    }
+
+    private func loadImage() async {
+        await MainActor.run {
+            image = nil
+            didFail = false
+        }
+        guard let url = resolvedURL else {
+            await MainActor.run { didFail = true }
+            return
+        }
+        let key = url.absoluteString as NSString
+        if let cached = FavoriteCoverArtCache.memory.object(forKey: key) {
+            await MainActor.run { image = cached }
+            return
+        }
+        do {
+            var req = URLRequest(url: url, timeoutInterval: 25)
+            req.httpMethod = "GET"
+            let (data, response) = try await URLSession.shared.data(for: req)
+            guard !Task.isCancelled else { return }
+            if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
+                await MainActor.run { didFail = true }
+                return
+            }
+            if let ui = UIImage(data: data) {
+                FavoriteCoverArtCache.memory.setObject(ui, forKey: key, cost: data.count)
+                await MainActor.run { image = ui }
+            } else {
+                await MainActor.run { didFail = true }
+            }
+        } catch {
+            await MainActor.run { didFail = true }
+        }
+    }
+}
+
 // MARK: - Favorite Category Detail (pushed via NavigationLink)
 
 struct FavoriteCategoryDetailView: View {
@@ -1142,10 +1233,18 @@ struct FavoriteCategoryDetailView: View {
                     ContentUnavailableView.search(text: filterText)
                         .padding(.top, 20)
                 } else {
-                    let columns = [GridItem(.adaptive(minimum: 140, maximum: 180), spacing: 16)]
+                    // `URLSession` cover loading no longer needs the `HStack` workaround
+                    // that replaced `AsyncImage` + `LazyVGrid` — bring the grid back so
+                    // columns space evenly (the manual row + leading `HStack` hugged the
+                    // left edge and broke margins).
+                    let columns = [
+                        GridItem(.flexible(), spacing: 16),
+                        GridItem(.flexible(), spacing: 16),
+                    ]
                     LazyVGrid(columns: columns, spacing: 20) {
                         ForEach(filteredItems) { item in
                             cardView(item)
+                                .frame(maxWidth: .infinity, alignment: .top)
                         }
                     }
                     .padding(.horizontal)
@@ -1269,29 +1368,29 @@ struct FavoriteCategoryDetailView: View {
 
     private func cardContent(_ item: BrowseItem) -> some View {
         let cornerRadius: CGFloat = category == .artist ? 70 : 10
+        let centerInCard = (category == .artist)
+        let hAlign: HorizontalAlignment = centerInCard ? .center : .leading
 
-        return VStack(alignment: .leading, spacing: 6) {
-            AsyncImage(url: URL(string: item.albumArtURL ?? "")) { phase in
-                if let img = phase.image {
-                    img.resizable().aspectRatio(contentMode: .fill)
-                } else {
-                    Rectangle().fill(.quaternary)
-                        .overlay {
-                            Image(systemName: placeholderIcon(for: item))
-                                .foregroundStyle(.tertiary)
-                        }
-                }
-            }
+        return VStack(alignment: hAlign, spacing: 0) {
+            FavoriteCoverImageView(
+                itemId: item.id,
+                imageURLString: item.albumArtURL,
+                placeholderIcon: placeholderIcon(for: item)
+            )
             .frame(width: 140, height: 140)
             .clipShape(RoundedRectangle(cornerRadius: cornerRadius))
 
-            Text(item.title)
-                .font(.caption.weight(.medium))
-                .lineLimit(1)
-                .truncationMode(.tail)
-                .foregroundStyle(.primary)
+            VStack(alignment: hAlign, spacing: 4) {
+                Text(item.title)
+                    .font(.caption.weight(.medium))
+                    .multilineTextAlignment(centerInCard ? .center : .leading)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .foregroundStyle(.primary)
 
-            subtitleLabel(for: item)
+                subtitleLabel(for: item, centerInCard: centerInCard)
+            }
+            .padding(.top, 6)
         }
         .frame(width: 140)
     }
@@ -1299,7 +1398,9 @@ struct FavoriteCategoryDetailView: View {
     // MARK: - Helpers
 
     private func albumNavItem(for item: BrowseItem) -> BrowseItem? {
-        if item.cloudType == "ALBUM" { return item }
+        if item.cloudType == "ALBUM" {
+            return searchManager.browseItemWithResolvedFavoriteURI(item) ?? item
+        }
         guard let ids = searchManager.parseCloudIds(from: item) else { return nil }
         var nav = searchManager.makeAlbumItem(
             objectId: ids.objectId, title: item.title, artist: item.artist,
@@ -1310,7 +1411,9 @@ struct FavoriteCategoryDetailView: View {
     }
 
     private func artistNavItem(for item: BrowseItem) -> BrowseItem? {
-        if item.cloudType == "ARTIST" { return item }
+        if item.cloudType == "ARTIST" {
+            return searchManager.browseItemWithResolvedFavoriteURI(item) ?? item
+        }
         guard let ids = searchManager.parseCloudIds(from: item) else { return nil }
         return searchManager.makeArtistItem(
             objectId: ids.objectId, name: item.title, artURL: item.albumArtURL,
@@ -1318,7 +1421,9 @@ struct FavoriteCategoryDetailView: View {
     }
 
     private func playlistNavItem(for item: BrowseItem) -> BrowseItem? {
-        if item.cloudType == "PLAYLIST" { return item }
+        if item.cloudType == "PLAYLIST" {
+            return searchManager.browseItemWithResolvedFavoriteURI(item) ?? item
+        }
         guard let ids = searchManager.parseCloudIds(from: item) else { return nil }
         var nav = searchManager.makePlaylistItem(
             objectId: ids.objectId, title: item.title, artist: item.artist,
@@ -1365,7 +1470,10 @@ struct FavoriteCategoryDetailView: View {
     }
 
     @ViewBuilder
-    private func subtitleLabel(for item: BrowseItem) -> some View {
+    private func subtitleLabel(
+        for item: BrowseItem,
+        centerInCard: Bool
+    ) -> some View {
         let subtitle: String = {
             switch category {
             case .playlist: return item.artist.isEmpty ? "Playlist" : item.artist
@@ -1392,6 +1500,7 @@ struct FavoriteCategoryDetailView: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
+            .frame(maxWidth: .infinity, alignment: centerInCard ? .center : .leading)
         }
     }
 

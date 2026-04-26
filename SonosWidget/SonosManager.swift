@@ -39,9 +39,10 @@ final class SonosManager {
     /// `EQType` toggles; we only fetch them when the active source is `.tv`
     /// so we don't waste SOAP calls on music sessions where they're hidden.
     var nightMode: Bool = false
-    /// Sonos calls this "Speech Enhancement" in the consumer app; the UPnP
-    /// flag is `DialogLevel`.
-    var speechEnhancement: Bool = false
+    /// Sonos calls this "Speech Enhancement" in the consumer app. The UPnP
+    /// field is `DialogLevel` — historically a 0/1 toggle, but Arc Ultra
+    /// widened it to a 5-step scale (Off / Low / Medium / High / Max).
+    var speechEnhancement: SpeechEnhancementLevel = .off
     /// Short window after a user toggle during which we ignore polled values
     /// — keeps the UI from flickering back to the old state if a poll lands
     /// before the speaker reflects the SetEQ.
@@ -369,9 +370,19 @@ final class SonosManager {
         guard let ip = selectedSpeaker?.ipAddress else { return }
         guard Date() >= soundbarEQLockUntil else { return }
         do {
-            let (night, speech) = try await SonosAPI.getSoundbarEQ(ip: ip)
+            let (night, speechEnabled, dialog) = try await SonosAPI.getSoundbarEQ(ip: ip)
             nightMode = night
-            speechEnhancement = speech
+            // Compose the unified 5-step Speech Enhancement enum:
+            //   - master switch off → .off (regardless of DialogLevel)
+            //   - master switch on  → DialogLevel clamped to 1–4
+            // Legacy bars (no SpeechEnhanceEnabled field) get
+            // `speechEnabled = dialog > 0` from the API helper, so
+            // DialogLevel == 0 → .off, anything else → .low+.
+            if speechEnabled, dialog > 0 {
+                speechEnhancement = SpeechEnhancementLevel.from(rawLevel: dialog)
+            } else {
+                speechEnhancement = .off
+            }
         } catch {
             // Soft-fail: non-soundbars return errors here, and we don't want
             // to surface that — the UI just won't show the panel.
@@ -392,13 +403,28 @@ final class SonosManager {
         }
     }
 
-    func toggleSpeechEnhancement() async {
+    func setSpeechEnhancement(_ level: SpeechEnhancementLevel) async {
         guard let ip = selectedSpeaker?.ipAddress else { return }
         let prev = speechEnhancement
-        speechEnhancement = !prev
+        guard level != prev else { return }
+        speechEnhancement = level
         soundbarEQLockUntil = Date().addingTimeInterval(2)
+        // Arc Ultra requires writing both fields. `SpeechEnhanceEnabled` is
+        // the master switch; `DialogLevel` carries the 1–4 intensity. The
+        // device persists DialogLevel even when disabled (per Sonos UPnP
+        // docs), so when the user turns it back on we want the level they
+        // last picked to come right back. Older soundbars silently ignore
+        // the unsupported `SpeechEnhanceEnabled` write, but we still send
+        // `DialogLevel = 0/1` so legacy bars still respond to Off / Low.
         do {
-            try await SonosAPI.setEQ(ip: ip, eqType: "DialogLevel", enabled: speechEnhancement)
+            switch level {
+            case .off:
+                _ = try? await SonosAPI.setEQ(ip: ip, eqType: "SpeechEnhanceEnabled", enabled: false)
+                try await SonosAPI.setEQLevel(ip: ip, eqType: "DialogLevel", level: 0)
+            case .low, .medium, .high, .max:
+                try await SonosAPI.setEQLevel(ip: ip, eqType: "DialogLevel", level: level.rawValue)
+                _ = try? await SonosAPI.setEQ(ip: ip, eqType: "SpeechEnhanceEnabled", enabled: true)
+            }
         } catch {
             speechEnhancement = prev
             soundbarEQLockUntil = .distantPast
@@ -666,7 +692,25 @@ final class SonosManager {
     func playNext(uri: String, metadata: String) async {
         guard let ip = playbackIP else { return }
         do {
-            try await SonosAPI.addURIToQueue(ip: ip, uri: uri, metadata: metadata, asNext: true)
+            // Sonos's `EnqueueAsNext=1` flag is unreliable across
+            // firmwares — when an album/playlist is playing it often
+            // gets interpreted as "after the current group ends",
+            // landing the new track at the bottom of the queue. Compute
+            // the insertion point ourselves: `currentTrack + 1` puts it
+            // immediately after whatever's playing now.
+            //
+            // For non-queue sources (radio, TV, line-in) there's no
+            // meaningful "current track number", so fall back to the
+            // legacy append-at-end behavior.
+            if isPlayingFromQueue,
+               let current = try await SonosAPI.getCurrentTrackNumber(ip: ip) {
+                try await SonosAPI.addURIToQueue(
+                    ip: ip, uri: uri, metadata: metadata,
+                    position: current + 1, asNext: true)
+            } else {
+                try await SonosAPI.addURIToQueue(
+                    ip: ip, uri: uri, metadata: metadata, asNext: true)
+            }
             await loadQueue()
         } catch { errorMessage = error.localizedDescription }
     }
@@ -1125,14 +1169,19 @@ final class SonosManager {
         for status in groupStatuses {
             let key = status.id
             if status.coordinator.id == selectedSpeaker?.id {
-                if let color = albumArtDominantColor { groupAlbumColors[key] = color }
-                if let img = albumArtImage { groupAlbumImages[key] = img }
+                // Mirror the selected speaker's live values verbatim — the
+                // earlier `if let` skipped writes when albumArtImage was
+                // nil, which kept the previous track's cover lingering on
+                // the home card after switching to TV input.
+                groupAlbumColors[key] = albumArtDominantColor
+                groupAlbumImages[key] = albumArtImage
                 continue
             }
-            guard let urlStr = status.trackInfo?.albumArtURL,
+            guard let urlStr = status.trackInfo?.albumArtURL, !urlStr.isEmpty,
                   let url = URL(string: urlStr) else {
                 groupAlbumColors[key] = nil
                 groupAlbumImages[key] = nil
+                groupLastArtURL[key] = nil
                 continue
             }
             if groupAlbumImages[key] != nil, groupLastArtURL[key] == urlStr {
@@ -2008,7 +2057,15 @@ final class SonosManager {
         SharedStorage.cachedAlbumArtURL = trackInfo?.albumArtURL
         SharedStorage.cachedVolume = volume
         SharedStorage.cachedPlaybackSource = trackInfo?.source.rawValue
+        // Music tracks ship `audioQuality` (Atmos / Lossless / Hi-Res …). TV
+        // input has no `audioQuality` at all — its parallel is `tvFormat`.
+        // Reuse the same widget cache slot so the home/medium widgets and
+        // Live Activity can surface the format string ("Dolby Atmos · MAT",
+        // "Multichannel PCM · 5.1", …) and the Atmos badge logic, which
+        // already keys off `label.contains("atmos")`, still picks up the
+        // right mark.
         SharedStorage.cachedAudioQualityLabel = trackInfo?.audioQuality?.label
+            ?? trackInfo?.tvFormat?.geekLabel
         SharedStorage.cachedGroupMemberCount = currentGroupMembers.filter { !$0.isInvisible }.count
         // Keep cloudGroupId in sync so the widget can call Cloud API independently.
         if let gid = cloudGroupId { SharedStorage.cloudGroupId = gid }
@@ -2021,7 +2078,33 @@ final class SonosManager {
     }
 
     private func loadAlbumArt() async {
-        guard let urlStr = trackInfo?.albumArtURL, urlStr != lastAlbumArtURL else { return }
+        let urlStr = trackInfo?.albumArtURL ?? ""
+
+        // No artwork in the current track — TV input, line-in, idle, etc.
+        // Old code `guard let urlStr = ...` short-circuited and the previous
+        // album cover would linger on the home-tab speaker card. Treat the
+        // empty case as "clear everything" so switching from music → TV
+        // properly resets the art (the player view falls back to its `tv`
+        // glyph; the home card falls back to the speaker glyph).
+        if urlStr.isEmpty {
+            guard lastAlbumArtURL != "" else { return }
+            lastAlbumArtURL = ""
+            albumArtTask?.cancel()
+            withAnimation(.easeInOut(duration: 0.5)) {
+                albumArtImage = nil
+                albumArtDominantColor = nil
+                if let gid = selectedSpeaker?.groupId ?? selectedSpeaker?.id {
+                    groupAlbumImages[gid] = nil
+                    groupAlbumColors[gid] = nil
+                    groupLastArtURL[gid] = nil
+                }
+            }
+            SharedStorage.albumArtData = nil
+            SharedStorage.cachedDominantColorHex = nil
+            return
+        }
+
+        guard urlStr != lastAlbumArtURL else { return }
         lastAlbumArtURL = urlStr
         albumArtTask?.cancel()
 

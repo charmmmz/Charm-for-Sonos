@@ -102,6 +102,7 @@ enum IntentHelper {
             SharedStorage.cachedAlbum = info.album
             SharedStorage.cachedAlbumArtURL = info.albumArtURL
             SharedStorage.cachedAudioQualityLabel = info.audioQuality?.label
+                ?? info.tvFormat?.geekLabel
             SharedStorage.cachedPlaybackSource = info.source.rawValue
 
             if let urlStr = info.albumArtURL, let url = URL(string: urlStr),

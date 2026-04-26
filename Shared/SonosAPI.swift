@@ -123,27 +123,89 @@ enum SonosAPI {
 
     /// Counterpart to `getEQ` — flip a soundbar EQ toggle.
     nonisolated static func setEQ(ip: String, eqType: String, enabled: Bool) async throws {
+        try await setEQLevel(ip: ip, eqType: eqType, level: enabled ? 1 : 0)
+    }
+
+    /// Read the raw integer value of an EQ field. Most flags are still 0/1
+    /// (NightMode, SubEnable, …), but Arc Ultra and newer soundbars exposed
+    /// `DialogLevel` as a 0–4 scale (Off / Low / Medium / High / Max), so we
+    /// expose the raw integer and let callers decide how to interpret it.
+    nonisolated static func getEQLevel(ip: String, eqType: String) async throws -> Int {
+        let xml = try await soap(ip: ip, endpoint: renderingControl,
+                                 service: "RenderingControl", action: "GetEQ",
+                                 body: "<InstanceID>0</InstanceID>" +
+                                       "<EQType>\(eqType)</EQType>")
+        guard let raw = extractTag("CurrentValue", from: xml), let n = Int(raw) else {
+            return 0
+        }
+        return n
+    }
+
+    nonisolated static func setEQLevel(ip: String, eqType: String, level: Int) async throws {
         _ = try await soap(ip: ip, endpoint: renderingControl,
                            service: "RenderingControl", action: "SetEQ",
                            body: "<InstanceID>0</InstanceID>" +
                                  "<EQType>\(eqType)</EQType>" +
-                                 "<DesiredValue>\(enabled ? 1 : 0)</DesiredValue>")
+                                 "<DesiredValue>\(level)</DesiredValue>")
     }
 
-    /// Convenience wrapper — fetch the two TV-mode toggles in parallel.
-    /// Returns `(nightMode, speechEnhancement)`. Used by `SonosManager` when
-    /// the speaker switches into TV input so the UI can render both cards
-    /// in the correct state without two sequential round-trips.
-    nonisolated static func getSoundbarEQ(ip: String) async throws -> (night: Bool, speech: Bool) {
-        async let night = getEQ(ip: ip, eqType: "NightMode")
-        async let speech = getEQ(ip: ip, eqType: "DialogLevel")
-        return try await (night, speech)
+    /// Convenience wrapper — fetch the soundbar's TV-mode toggles in
+    /// parallel. Newer Sonos firmware (Arc Ultra) splits Speech Enhancement
+    /// into two fields:
+    ///
+    /// - `SpeechEnhanceEnabled` (bool) — master on/off; **does not** flip
+    ///   `DialogLevel` to 0 when disabled.
+    /// - `DialogLevel` (1–4) — intensity (Low / Med / High / Max), only
+    ///   meaningful while `SpeechEnhanceEnabled = 1`.
+    ///
+    /// Older soundbars (Beam, original Arc, Ray) only expose `DialogLevel`
+    /// as a 0/1 toggle and don't ship `SpeechEnhanceEnabled`. We probe both
+    /// so the caller can compose the right `SpeechEnhancementLevel`:
+    ///
+    /// - If `SpeechEnhanceEnabled` returns 0 (or the field doesn't exist on
+    ///   this bar but `DialogLevel` is also 0) → `.off`.
+    /// - Otherwise the level we report is `DialogLevel` clamped to 1–4.
+    nonisolated static func getSoundbarEQ(ip: String) async throws -> (night: Bool, speechEnabled: Bool, dialogLevel: Int) {
+        // Fan out as detached tasks so we can `try?` the
+        // `SpeechEnhanceEnabled` lookup independently — older soundbars
+        // (Beam, original Arc, Ray) return a SOAP fault for that EQType
+        // rather than silently 0, and we don't want one missing field to
+        // tank the whole refresh.
+        async let nightTask = getEQ(ip: ip, eqType: "NightMode")
+        async let speechTask: Bool? = {
+            try? await getEQ(ip: ip, eqType: "SpeechEnhanceEnabled")
+        }()
+        async let dialogTask = getEQLevel(ip: ip, eqType: "DialogLevel")
+
+        let night = try await nightTask
+        let dialog = try await dialogTask
+        let speechProbe = await speechTask
+        // Legacy bars: treat DialogLevel > 0 as "on" for the unified
+        // SpeechEnhancementLevel mapping the UI uses.
+        let enabled = speechProbe ?? (dialog > 0)
+        return (night: night, speechEnabled: enabled, dialogLevel: dialog)
     }
 
     /// Returns the raw SOAP XML from GetPositionInfo (for diagnostic use).
     nonisolated static func getRawPositionInfo(ip: String) async throws -> String {
         try await soap(ip: ip, endpoint: avTransport, service: "AVTransport",
                        action: "GetPositionInfo", body: "<InstanceID>0</InstanceID>")
+    }
+
+    /// 1-based track number of whatever's currently selected in the
+    /// queue. Used by `playNext` to compute an explicit insertion point
+    /// — Sonos's `EnqueueAsNext=1` flag alone is firmware-dependent and
+    /// on recent firmwares it ignores the hint and appends at the end of
+    /// the queue (or the end of the current album), which is *not* what
+    /// the user expects from "Play Next". Returns `nil` when there's no
+    /// meaningful queue position (radio, TV, line-in).
+    nonisolated static func getCurrentTrackNumber(ip: String) async throws -> Int? {
+        let xml = try await soap(ip: ip, endpoint: avTransport, service: "AVTransport",
+                                 action: "GetPositionInfo", body: "<InstanceID>0</InstanceID>")
+        guard let raw = extractTag("Track", from: xml), let n = Int(raw), n > 0 else {
+            return nil
+        }
+        return n
     }
 
     nonisolated static func getPositionInfo(ip: String) async throws -> TrackInfo {
@@ -173,19 +235,8 @@ enum SonosAPI {
         if source == .tv {
             if let code = try? await getHTAudioIn(ip: ip) {
                 tvFormat = TVAudioFormat.from(htAudioInCode: code)
-                #if DEBUG
-                SonosLog.debug(.tv, "HTAudioIn=\(code) → \(tvFormat?.label ?? "nil")")
-                #endif
             }
         }
-
-        // Discovery dump kept around for debugging unfamiliar firmwares — only
-        // logs at most once per cool-down window.
-        #if DEBUG
-        if decodedURI.hasPrefix("x-sonos-htastream:") {
-            await runTVDiagnostics(ip: ip, uri: decodedURI, positionInfoXML: xml)
-        }
-        #endif
 
         if let raw = extractTag("TrackMetaData", from: xml) {
             let meta = decodeXMLEntities(raw)
@@ -233,13 +284,18 @@ enum SonosAPI {
 
         // For TV input the speaker doesn't ship track metadata at all — the
         // earlier parse leaves title/artist/album as the literal "Unknown"
-        // sentinel. Replace title with "TV" and use the artist subtitle slot
-        // for a state label (`Live audio` vs `No signal`). The actual format
-        // goes in the dedicated pill below the LIVE bar so this row stays
-        // generic across hardware (Sonos doesn't expose HDMI vs Optical).
+        // sentinel. Replace title with "TV" and surface the actual codec
+        // ("Dolby Atmos · MAT", "Multichannel PCM · 5.1") in the artist
+        // subtitle slot so the player headline carries the most useful
+        // signal. Live/idle status is conveyed redundantly by the row of
+        // chips below the headline + the breathing halo on the TV glyph.
         if source == .tv {
             title = "TV"
-            artist = tvFormat?.statusLabel ?? "Live audio"
+            if let format = tvFormat {
+                artist = format.hasSignal ? format.geekLabel : format.statusLabel
+            } else {
+                artist = "Live audio"
+            }
             album = ""
         }
 
@@ -892,80 +948,6 @@ enum SonosAPI {
             guard !smapiURI.isEmpty else { return nil }
             return MusicService(id: id, name: name, smapiURI: smapiURI, capabilitiesMask: caps, authType: auth)
         }
-    }
-
-    // MARK: - TV / HTA Stream Diagnostics
-
-    /// Lock-protected timestamp gate so the diagnostic dump only fires once
-    /// per cool-down window even though `getPositionInfo` is polled ~1×/s.
-    /// `nonisolated` on the lock + var lets us mutate without crossing actor
-    /// boundaries — the `NSLock` provides the only synchronization needed.
-    private final class TVDiagnosticsThrottle {
-        private nonisolated static let lock = NSLock()
-        nonisolated(unsafe) private static var lastRun: Date?
-        private nonisolated static let cooldown: TimeInterval = 30
-
-        nonisolated static func shouldRun() -> Bool {
-            lock.lock(); defer { lock.unlock() }
-            let now = Date()
-            if let last = lastRun, now.timeIntervalSince(last) < cooldown {
-                return false
-            }
-            lastRun = now
-            return true
-        }
-    }
-
-    /// Probe Sonos endpoints for the soundbar's audio-format signal and dump
-    /// to the `[TV]` log channel. Debug-only.
-    ///
-    /// History: `GetPositionInfo` and `GetMediaInfo` were ruled out
-    /// (`TrackMetaData` is `NOT_IMPLEMENTED`, `CurrentURIMetaData` is a
-    /// placeholder `homeTheater` DIDL). The format info actually lives on
-    /// `DeviceProperties.GetZoneInfo`'s `HTAudioIn` integer field — same
-    /// source soco / Home Assistant's `sensor.<speaker>_audio_input_format`
-    /// use. This dump confirms that on the user's specific firmware.
-    private nonisolated static func runTVDiagnostics(ip: String, uri: String,
-                                                      positionInfoXML: String) async {
-        #if DEBUG
-        // `getPositionInfo` is polled ~1×/s. Without throttling we'd fire
-        // multiple SOAP probes every second and bury the Xcode console.
-        guard TVDiagnosticsThrottle.shouldRun() else { return }
-        SonosLog.debug(.tv, "──── TV stream diagnostics ────")
-        SonosLog.debug(.tv, "TrackURI: \(uri)")
-
-        // The actual data source — `HTAudioIn` is an integer code that
-        // `TVAudioFormat.from(htAudioInCode:)` translates into a label.
-        do {
-            let zone = try await soap(ip: ip, endpoint: deviceProperties,
-                                      service: "DeviceProperties",
-                                      action: "GetZoneInfo", body: "")
-            SonosLog.debug(.tv, "── DeviceProperties.GetZoneInfo ──\n\(zone)")
-            if let raw = extractTag("HTAudioIn", from: zone), let code = Int(raw) {
-                let format = TVAudioFormat.from(htAudioInCode: code)
-                SonosLog.debug(.tv,
-                    "Decoded HTAudioIn=\(code) → \"\(format.label)\" "
-                    + "(codec=\(format.codec), layout=\(format.channelLayout ?? "—"), "
-                    + "atmos=\(format.isAtmos))")
-            }
-        } catch {
-            SonosLog.debug(.tv, "── GetZoneInfo FAILED: \(error.localizedDescription)")
-        }
-
-        // Kept around as breadcrumbs so the dump is self-contained when
-        // grepping logs — both confirmed to NOT contain useful format data.
-        SonosLog.debug(.tv, "── GetPositionInfo (raw) ──\n\(positionInfoXML)")
-        do {
-            let media = try await soap(ip: ip, endpoint: avTransport,
-                                       service: "AVTransport", action: "GetMediaInfo",
-                                       body: "<InstanceID>0</InstanceID>")
-            SonosLog.debug(.tv, "── GetMediaInfo ──\n\(media)")
-        } catch {
-            SonosLog.debug(.tv, "── GetMediaInfo FAILED: \(error.localizedDescription)")
-        }
-
-        SonosLog.debug(.tv, "──── end diagnostics ────")
-        #endif
     }
 
     // MARK: - Audio Quality Parsing

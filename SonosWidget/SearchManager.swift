@@ -621,36 +621,68 @@ final class SearchManager {
         return objectId
     }
 
+    /// Parses `SA_RINCON` + account token from a DIDL fragment (or full
+    /// `<DIDL-Lite>`) and returns local sid, cloud service id, and optional `sn`
+    /// (`#Svc…-sn-` in the same `desc` / blob).
+    private func rinconBindingAndAccountSn(in xml: String) -> (Int, String, String?)? {
+        // Some favorites store a full outer DIDL — prefer `<desc>`, but always
+        // be able to fall back to scanning the whole `r:resMD`.
+        let region: String = {
+            if let d = SonosAPI.extractTag("desc", from: xml), d.contains("SA_RINCON") { return d }
+            return xml
+        }()
+        guard let rRange = region.range(of: "SA_RINCON(\\d+)_", options: .regularExpression) else { return nil }
+        let token = String(region[rRange])
+        let digits: String
+        if token.hasPrefix("SA_RINCON"), token.hasSuffix("_") {
+            digits = String(token.dropFirst("SA_RINCON".count).dropLast(1))
+        } else { return nil }
+        guard let pair = localAndCloudServiceIds(fromRinconDigits: digits) else { return nil }
+        let sn = extractSnFromSvcLine(in: region) ?? extractSnFromSvcLine(in: xml)
+        return (pair.0, pair.1, sn)
+    }
+
+    private func localAndCloudServiceIds(fromRinconDigits digits: String) -> (Int, String)? {
+        if let n = Int(digits), let cloud = localToCloudSid[n] { return (n, cloud) }
+        if let local = cloudToLocalSid[digits] {
+            return (local, localToCloudSid[local] ?? digits)
+        }
+        if let local = canonicalLocalSid(forCloudOrServiceTypeDigits: digits) {
+            if let c = localToCloudSid[local] { return (local, c) }
+        }
+        return nil
+    }
+
+    private func extractSnFromSvcLine(in text: String) -> String? {
+        guard let m = try? NSRegularExpression(pattern: "#Svc\\d+-([^-]+)-").firstMatch(
+            in: text, range: NSRange(text.startIndex..., in: text)),
+              let r = Range(m.range(at: 1), in: text) else { return nil }
+        return String(text[r])
+    }
+
     /// Fallback: extract Cloud IDs from DIDL desc tag (SA_RINCON{sid}_{user})
     /// and item/container id attribute (prefix + objectId) when <res> is missing.
     private func parseCloudIdsFromDIDLMetadata(_ item: BrowseItem) -> FavoriteCloudIds? {
         let xmlSources = [item.resMD, item.metaXML].compactMap { $0 }
         guard !xmlSources.isEmpty else { return nil }
 
-        // Extract local service ID from SA_RINCON{sid}_ pattern in <desc> tag
+        // The number after `SA_RINCON` is often a **cloud** or SMAPI service id
+        // (e.g. 52231 for Apple Music), not the local `sid` used in `?sid=204`.
+        // Old code used `localToCloudSid[52231]` and always failed.
         var localSid: Int?
+        var cloudServiceId: String?
         var extractedSn: String?
         for xml in xmlSources {
-            if let desc = SonosAPI.extractTag("desc", from: xml) {
-                // Pattern: SA_RINCON{sid}_X_#Svc{sid}-{sn}-Token or SA_RINCON{sid}_...
-                if let match = desc.range(of: "SA_RINCON(\\d+)_", options: .regularExpression) {
-                    let numStr = desc[match].dropFirst("SA_RINCON".count).dropLast(1)
-                    localSid = Int(numStr)
-                }
-                // Try to extract account (sn) from X_#Svc{sid}-{sn}-Token
-                if let svcRange = desc.range(of: "#Svc\\d+-([^-]+)-", options: .regularExpression) {
-                    let segment = desc[svcRange]
-                    if let dashIdx = segment.firstIndex(of: "-"),
-                       let lastDash = segment[segment.index(after: dashIdx)...].firstIndex(of: "-") {
-                        extractedSn = String(segment[segment.index(after: dashIdx)..<lastDash])
-                    }
-                }
-                if localSid != nil { break }
+            if let (local, cloud, sn) = rinconBindingAndAccountSn(in: xml) {
+                localSid = local
+                cloudServiceId = cloud
+                extractedSn = sn
+                break
             }
         }
 
-        guard let sid = localSid, let cloudSid = localToCloudSid[sid] else {
-            SonosLog.debug(.parseCloudIds, "Fallback: no localSid from desc tag")
+        guard localSid != nil, let cloudSid = cloudServiceId else {
+            SonosLog.debug(.parseCloudIds, "Fallback: no RINCON / service binding from desc")
             return nil
         }
 
@@ -673,7 +705,8 @@ final class SearchManager {
         }
 
         let accountId = extractedSn ?? "2"
-        SonosLog.debug(.parseCloudIds, "Fallback success: objectId=\(oid), cloudSid=\(cloudSid), sn=\(accountId)")
+        // Intentionally no log on success: `parseCloudIds` runs on every SwiftUI
+        // body refresh for favorites rows — logging here floods the console.
         return FavoriteCloudIds(objectId: oid, cloudServiceId: cloudSid, accountId: accountId)
     }
 
@@ -1553,6 +1586,62 @@ final class SearchManager {
         }
     }
 
+    /// Cloud `listFavorites` and UPnP shortcut favorites (artists, some
+    /// collections) often ship **without** a top-level `<res>` URI, while
+    /// `r:resMD` or DIDL `id` still has everything needed to build the
+    /// `x-rincon-cpcontainer:…?sid=…&sn=…` form. `addToFavorites` and navigation
+    /// into detail views need that resolved shape or the heart action fails
+    /// (`guard` on `uri`) even though the entry is a valid favorite.
+    func browseItemWithResolvedFavoriteURI(_ item: BrowseItem) -> BrowseItem? {
+        if let u = item.uri, !u.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return item }
+        guard let ids = parseCloudIds(from: item) else { return nil }
+        let typeString: String? = item.cloudType ?? favoriteCategoryAsCloudType(item)
+        guard let ts = typeString, let kind = CloudObjectType(rawValue: ts) else { return nil }
+        let oid = ids.objectId
+        let cloudSid = ids.cloudServiceId
+        let aid = ids.accountId
+        switch kind {
+        case .artist:
+            return makeArtistItem(
+                objectId: oid, name: item.title, artURL: item.albumArtURL,
+                cloudServiceId: cloudSid, accountId: aid)
+        case .album:
+            return makeAlbumItem(
+                objectId: oid, title: item.title, artist: item.artist,
+                artURL: item.albumArtURL,
+                cloudServiceId: cloudSid, accountId: aid)
+        case .playlist:
+            return makePlaylistItem(
+                objectId: oid, title: item.title, artist: item.artist,
+                artURL: item.albumArtURL,
+                cloudServiceId: cloudSid, accountId: aid)
+        case .track:
+            return makeTrackItem(
+                objectId: oid, title: item.title, artist: item.artist,
+                album: item.album, artURL: item.albumArtURL,
+                mimeType: nil,
+                cloudServiceId: cloudSid, accountId: aid)
+        case .program:
+            return makeStationItem(
+                objectId: oid, title: item.title, artistName: item.artist,
+                artURL: item.albumArtURL,
+                cloudServiceId: cloudSid, accountId: aid)
+        case .collection:
+            return nil
+        }
+    }
+
+    private func favoriteCategoryAsCloudType(_ item: BrowseItem) -> String? {
+        switch item.favoriteCategory {
+        case .artist: return "ARTIST"
+        case .album: return "ALBUM"
+        case .playlist: return "PLAYLIST"
+        case .collection: return "COLLECTION"
+        case .station: return "PROGRAM"
+        case .song: return "TRACK"
+        }
+    }
+
     func addToFavorites(item: BrowseItem, manager: SonosManager) async -> Bool {
         // Sonos Cloud Control API has no endpoint to CREATE a favorite —
         // only UPnP CreateObject does that. Surface a clear message rather
@@ -1563,28 +1652,29 @@ final class SearchManager {
                 .localizedDescription
             return false
         }
-        guard let ip = manager.selectedSpeaker?.playbackIP,
-              let uri = item.uri else { return false }
-        let meta = playbackMetadata(for: item)
-
-        // Dispatch the correct outer-DIDL shape per cloudType. CloudObjectType
-        // is the single source of truth for r:type (shortcut vs instantPlay),
-        // whether <res> carries the real URI, and what goes in r:description.
-        let type = item.cloudType.flatMap { CloudObjectType(rawValue: $0) }
+        guard let ip = manager.selectedSpeaker?.playbackIP else { return false }
+        guard let resolved = browseItemWithResolvedFavoriteURI(item) else { return false }
+        guard let uri = resolved.uri, !uri.isEmpty else { return false }
+        // Fresh inner DIDL from `resolved` avoids reusing a stale `r:resMD`
+        // on an in-memory `BrowseItem` after remove → re-add.
+        let meta = innerDIDLForFavoriteCreate(resolved: resolved)
+        // Dispatch the correct outer-DIDL shape from `resolved` (not the
+        // pre-resolution `item`) so ARTIST stays `shortcut` + empty <res>.
+        let type = resolved.cloudType.flatMap { CloudObjectType(rawValue: $0) }
         let rType = type?.favoriteRType ?? "instantPlay"
         let emitRes = type?.emitsFavoriteRes ?? true
-        let description = (type?.emitsFavoriteRes ?? true)
-            ? item.title                           // instantPlay: title
-            : (serviceDisplayName(for: item) ?? "Apple Music")  // shortcut: service name
+        let description: String = (type?.emitsFavoriteRes ?? true)
+            ? resolved.title
+            : (serviceDisplayName(for: resolved) ?? "Apple Music")
 
-        SonosLog.debug(.favorites, "Adding '\(item.title)' (type=\(item.cloudType ?? "nil"), rType=\(rType)) — uri=\(uri)")
+        SonosLog.debug(.favorites, "Adding '\(resolved.title)' (type=\(resolved.cloudType ?? "nil"), rType=\(rType)) — uri=\(uri)")
         SonosLog.debug(.favorites, "metadata=\(meta)")
         do {
             try await SonosAPI.addToFavorites(
-                ip: ip, title: item.title, uri: uri, metadata: meta,
-                albumArtURI: item.albumArtURL,
+                ip: ip, title: resolved.title, uri: uri, metadata: meta,
+                albumArtURI: resolved.albumArtURL,
                 rType: rType, description: description, emitRes: emitRes)
-            SonosLog.info(.favorites, "Added '\(item.title)' to Sonos Favorites")
+            SonosLog.info(.favorites, "Added '\(resolved.title)' to Sonos Favorites")
             try? await Task.sleep(for: .milliseconds(500))
             await refreshFavorites(ip: ip)
             return true
@@ -1593,6 +1683,22 @@ final class SearchManager {
             errorMessage = error.localizedDescription
             return false
         }
+    }
+
+    /// Inner `r:resMD` for `ContentDirectory#CreateObject`. For cloud-typed
+    /// items, always build from the resolved row so it matches a fresh add
+    /// from the factory. Otherwise fall back to stored `r:resMD` / generic
+    /// builders (legacy UPnP-only items).
+    private func innerDIDLForFavoriteCreate(resolved: BrowseItem) -> String {
+        if let ct = resolved.cloudType, !ct.isEmpty, let sid = resolved.serviceId {
+            let accountId = accountIdForLocalSid(sid) ?? "0"
+            return buildCloudDIDLMetadata(
+                item: resolved, localSid: sid, accountId: accountId)
+        }
+        if let r = resolved.resMD, !r.isEmpty, resolved.cloudType == nil {
+            return r
+        }
+        return playbackMetadata(for: resolved)
     }
 
     /// Display name of the music service a BrowseItem belongs to (e.g.

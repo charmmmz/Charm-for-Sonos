@@ -8,6 +8,46 @@ enum RepeatMode: String, Codable, Sendable {
     case off, all, one
 }
 
+// MARK: - Soundbar Speech Enhancement Level
+
+/// Sonos exposes the soundbar's "Speech Enhancement" via the
+/// `RenderingControl.DialogLevel` UPnP field. Older bars (Beam, original
+/// Arc, Ray) only accept `0` or `1` (off / on). The Arc Ultra widened the
+/// range to a 5-step scale matching the official app's "Off / Low / Medium
+/// / High / Max" picker. We model all five so the UI can render the full
+/// menu; on legacy bars values >1 are simply rejected by the device.
+enum SpeechEnhancementLevel: Int, Codable, Sendable, CaseIterable {
+    case off = 0, low = 1, medium = 2, high = 3, max = 4
+
+    var label: String {
+        switch self {
+        case .off:    return "Off"
+        case .low:    return "Low"
+        case .medium: return "Medium"
+        case .high:   return "High"
+        case .max:    return "Max"
+        }
+    }
+
+    /// Compact label for a card pill where space is tight ("Med" instead of
+    /// "Medium"). Only applies to `.medium`; the rest already fit.
+    var shortLabel: String {
+        self == .medium ? "Med" : label
+    }
+
+    var isOn: Bool { self != .off }
+
+    /// Map an arbitrary int to the closest valid level. Older bars echo back
+    /// `1` as "on"; we treat that as `.low` which is functionally how the
+    /// Sonos app rendered the legacy on-state when re-paired with Arc Ultra.
+    static func from(rawLevel level: Int) -> SpeechEnhancementLevel {
+        // `max` inside the enum scope resolves to the `.max` case, so we
+        // need to namespace `Swift.max`/`Swift.min` explicitly.
+        let clamped = Swift.max(0, Swift.min(4, level))
+        return SpeechEnhancementLevel(rawValue: clamped) ?? .off
+    }
+}
+
 // MARK: - Playback Source
 
 enum PlaybackSource: String, Codable, Sendable {
@@ -400,6 +440,35 @@ struct AudioQuality: Codable, Equatable, Sendable {
             return "BadgeAppleLossless"
         }
         return nil
+    }
+
+    /// Companion to `badgeImageName` — returns the text that should be
+    /// rendered *next to* the badge so the badge wordmark and the text
+    /// don't repeat each other. The Dolby Atmos badge is itself a
+    /// "DOLBY ATMOS" wordmark, so when we'd otherwise render
+    /// "Dolby Atmos · MAT" we drop the prefix and just keep "MAT" / "TrueHD"
+    /// / "DD+" / "5.1". For plain "Dolby Atmos" (music tracks where we have
+    /// no transport variant) we return nil so the caller can render the
+    /// badge alone with no companion text.
+    ///
+    /// The Apple Lossless badge is a glyph-only mark with no readable
+    /// "LOSSLESS" text, so its companion ("Lossless" / "Hi-Res Lossless")
+    /// stays intact and we just hand the original label back.
+    nonisolated static func badgeCompanionLabel(forQualityLabel label: String?) -> String? {
+        guard let label else { return nil }
+        let lower = label.lowercased()
+        guard lower.contains("atmos") else { return label }
+        // Strip the "Dolby Atmos" prefix and any " · " / " — " / "·" / "—"
+        // separator that immediately followed it, leaving just the
+        // transport variant ("MAT", "TrueHD", "DD+") or channel layout.
+        var remainder = label
+        if let range = remainder.range(of: "Dolby Atmos", options: .caseInsensitive) {
+            remainder.removeSubrange(range)
+        }
+        let trimmed = remainder.trimmingCharacters(
+            in: CharacterSet(charactersIn: " ·—-").union(.whitespacesAndNewlines)
+        )
+        return trimmed.isEmpty ? nil : trimmed
     }
 
     nonisolated static func from(protocolInfo: String, sampleRate: String?, bitDepth: String?,

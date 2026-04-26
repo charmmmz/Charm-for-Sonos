@@ -8,9 +8,14 @@ struct SonosLiveActivity: Widget {
         ActivityConfiguration(for: SonosActivityAttributes.self) { context in
             LockScreenView(context: context)
         } dynamicIsland: { context in
-            DynamicIsland {
+            // The `dynamicIsland` closure is a function builder body — adding
+            // any `let` before the `DynamicIsland(...)` expression turns it
+            // into a multi-statement closure that needs an explicit return.
+            let islandSource = context.state.playbackSourceRaw
+                .flatMap(PlaybackSource.init(rawValue:)) ?? .unknown
+            return DynamicIsland {
                 DynamicIslandExpandedRegion(.leading) {
-                    ArtView(data: context.state.albumArtThumbnail, size: 50)
+                    ArtView(data: context.state.albumArtThumbnail, size: 50, source: islandSource)
                         .padding(.leading, 2)
                         .padding(.trailing, 6)
                         .frame(maxHeight: .infinity, alignment: .bottom)
@@ -83,7 +88,7 @@ struct SonosLiveActivity: Widget {
                 }
             } compactLeading: {
                 // Compact/minimal views are static-only per Apple docs — no animation supported.
-                ArtView(data: context.state.albumArtThumbnail, size: 20)
+                ArtView(data: context.state.albumArtThumbnail, size: 20, source: islandSource)
                     .clipShape(RoundedRectangle(cornerRadius: 4))
             } compactTrailing: {
                 // Compact/minimal regions are static-only — no animation supported by Apple.
@@ -92,7 +97,7 @@ struct SonosLiveActivity: Widget {
                     .foregroundStyle(themeColor(from: context.state.dominantColorHex))
                     .padding(.trailing, 4)
             } minimal: {
-                ArtView(data: context.state.albumArtThumbnail, size: 20)
+                ArtView(data: context.state.albumArtThumbnail, size: 20, source: islandSource)
                     .clipShape(Circle())
             }
         }
@@ -114,7 +119,7 @@ private struct LockScreenView: View {
         VStack(spacing: 6) {
             // ── Single row: art | text | controls ──
             HStack(spacing: 12) {
-                ArtView(data: context.state.albumArtThumbnail, size: 48)
+                ArtView(data: context.state.albumArtThumbnail, size: 48, source: source)
 
                 VStack(alignment: .leading, spacing: 2) {
                     Text(context.state.trackTitle)
@@ -161,7 +166,12 @@ private struct LockScreenView: View {
         .padding(.vertical, 12)
         .background {
             ZStack {
-                if let data = context.state.albumArtThumbnail,
+                // Suppress the blurred-art backdrop on TV input — there's no
+                // album art to blur, and a stale thumbnail from the prior
+                // music session would otherwise tint the lock screen the
+                // wrong color.
+                if source != .tv,
+                   let data = context.state.albumArtThumbnail,
                    let img = UIImage(data: data) {
                     Image(uiImage: img)
                         .resizable()
@@ -241,9 +251,14 @@ private struct LiveProgressView: View {
 private struct ArtView: View {
     let data: Data?
     let size: CGFloat
+    /// Optional source hint — when this is `.tv` we skip the "music.note"
+    /// fallback even if `data` happens to be set (it shouldn't be, but the
+    /// art clear can race against Live Activity push updates) and render a
+    /// `tv` glyph instead so the lock screen / Dynamic Island stay accurate.
+    var source: PlaybackSource = .unknown
 
     var body: some View {
-        if let data, let img = UIImage(data: data) {
+        if source != .tv, let data, let img = UIImage(data: data) {
             Image(uiImage: img)
                 .resizable()
                 .aspectRatio(contentMode: .fill)
@@ -254,7 +269,7 @@ private struct ArtView: View {
                 .fill(Color.white.opacity(0.15))
                 .frame(width: size, height: size)
                 .overlay {
-                    Image(systemName: "music.note")
+                    Image(systemName: source == .tv ? "tv" : "music.note")
                         .font(.system(size: size * 0.38))
                         .foregroundStyle(.secondary)
                 }

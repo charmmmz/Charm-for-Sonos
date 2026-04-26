@@ -466,7 +466,20 @@ private struct SpeakerGroupCardView: View {
                 }
             } label: {
                 HStack(spacing: 12) {
-                    if let img = artImage {
+                    if group.trackInfo?.source == .tv {
+                        // TV input never has cover art — show a dedicated
+                        // TV glyph instead of the generic speaker fallback
+                        // so the row stays unambiguous when the user is on
+                        // soundbar/HDMI input.
+                        RoundedRectangle(cornerRadius: 8)
+                            .fill(.white.opacity(0.1))
+                            .frame(width: 44, height: 44)
+                            .overlay {
+                                Image(systemName: "tv")
+                                    .font(.body)
+                                    .foregroundStyle(.secondary)
+                            }
+                    } else if let img = artImage {
                         Image(uiImage: img)
                             .resizable().aspectRatio(contentMode: .fill)
                             .frame(width: 44, height: 44)
@@ -488,11 +501,13 @@ private struct SpeakerGroupCardView: View {
                             .lineLimit(1)
 
                         if let track = group.trackInfo, track.source == .tv {
-                            // Match the music row's "title — subtitle" pattern
-                            // and styling exactly (.caption + .secondary). Use
-                            // the format label as the subtitle so the row
-                            // reads e.g. "TV — Multichannel PCM 5.1".
-                            Text("\(track.title) — \(track.tvFormat?.label ?? track.artist)")
+                            // `getPositionInfo` already populates `artist`
+                            // with the format string for TV input
+                            // ("Dolby Atmos · MAT" / "Multichannel PCM · 5.1"
+                            // / "No signal"), so we render the same
+                            // "title — subtitle" pattern as music rows
+                            // without any TV-specific branching.
+                            Text("\(track.title) — \(track.artist)")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                                 .lineLimit(1)
@@ -935,7 +950,10 @@ struct NowPlayingOverlay: View {
             volumeControl
                 .padding(.top, manager.trackInfo?.source == .tv ? 18 * s : 22 * s)
 
-            bottomActions(showQueue: true)
+            // Queue is meaningless for TV input (the soundbar isn't playing
+            // a queue, it's passing through HDMI/optical), so hide the list
+            // button and let the speaker picker fill the row.
+            bottomActions(showQueue: manager.trackInfo?.source != .tv)
                 .padding(.top, 16 * s)
 
             Spacer(minLength: 0)
@@ -972,16 +990,20 @@ struct NowPlayingOverlay: View {
                             .font(.title3.bold())
                             .foregroundStyle(.white)
                             .lineLimit(2)
-                        Text(manager.trackInfo?.artist ?? "—")
-                            .font(.body)
-                            .foregroundStyle(.white.opacity(0.7))
-                            .lineLimit(1)
-                            .padding(.top, 3)
-                        Text(manager.trackInfo?.album ?? "")
-                            .font(.subheadline)
-                            .foregroundStyle(.white.opacity(0.45))
-                            .lineLimit(1)
-                            .padding(.top, 1)
+                        // Hide artist/album rows for TV — the format pill in
+                        // `tvFormatPanel` already conveys the codec.
+                        if manager.trackInfo?.source != .tv {
+                            Text(manager.trackInfo?.artist ?? "—")
+                                .font(.body)
+                                .foregroundStyle(.white.opacity(0.7))
+                                .lineLimit(1)
+                                .padding(.top, 3)
+                            Text(manager.trackInfo?.album ?? "")
+                                .font(.subheadline)
+                                .foregroundStyle(.white.opacity(0.45))
+                                .lineLimit(1)
+                                .padding(.top, 1)
+                        }
                         Spacer(minLength: 0)
                     }
                     .frame(maxWidth: .infinity, maxHeight: artSz, alignment: .leading)
@@ -1105,9 +1127,42 @@ struct NowPlayingOverlay: View {
     @ViewBuilder
     private func albumArtView(size: CGFloat) -> some View {
         let isTV = manager.trackInfo?.source == .tv
+        let tvFormat = manager.trackInfo?.tvFormat
+        let tvHasSignal = tvFormat?.hasSignal ?? false
+        // Atmos streams glow blue (matches the BadgeDolbyAtmos accent
+        // family); everything else falls back to a neutral white sheen so
+        // the TV slot doesn't blend into the dark background.
+        let tvGlowColor: Color = (tvFormat?.isAtmos == true)
+            ? Color(red: 0.36, green: 0.55, blue: 1.0)
+            : .white
         return ZStack {
             RoundedRectangle(cornerRadius: 16).fill(.quaternary)
                 .overlay {
+                    // Subtle "audio is flowing" breathing halo behind the
+                    // TV glyph — only when the bar reports a live stream.
+                    // Driven by `TimelineView` so it survives navigation +
+                    // backgrounding without us hand-managing a state var.
+                    if isTV && tvHasSignal {
+                        TimelineView(.animation(minimumInterval: 0.03, paused: false)) { ctx in
+                            let t = ctx.date.timeIntervalSinceReferenceDate
+                            // ~3s breathing cycle, eased so the peaks feel
+                            // like inhale/exhale rather than a metronome.
+                            let phase = (sin(t * (.pi * 2 / 3.0)) + 1) / 2
+                            RadialGradient(
+                                colors: [
+                                    tvGlowColor.opacity(0.18 + 0.10 * phase),
+                                    tvGlowColor.opacity(0.04),
+                                    .clear
+                                ],
+                                center: .center,
+                                startRadius: 0,
+                                endRadius: size * 0.55
+                            )
+                            .blur(radius: 30)
+                            .blendMode(.plusLighter)
+                            .allowsHitTesting(false)
+                        }
+                    }
                     // For TV input there's no album art — swap the music-note
                     // placeholder for a TV glyph so the now-playing screen
                     // immediately reads as "watching" instead of "buffering".
@@ -1134,40 +1189,82 @@ struct NowPlayingOverlay: View {
             }
         }
         .frame(width: size, height: size)
+        // For TV input we reuse the bottom-leading slot that normally
+        // holds the streaming-source badge — surfacing the LIVE/IDLE
+        // signal status right where the user's eye is already trained
+        // to look for "what's playing this".
+        .overlay(alignment: .bottomLeading) {
+            if isTV && verticalSizeClass != .compact {
+                tvSignalBadge(hasSignal: tvHasSignal)
+                    .padding(10)
+            }
+        }
         .animation(.easeInOut(duration: 0.6), value: manager.trackInfo?.albumArtURL)
+    }
+
+    /// Pill that mirrors `SourceBadgeView` proportions — kept here rather
+    /// than in `SourceBadgeView` itself because the LIVE/IDLE state is
+    /// strictly TV-specific and shouldn't pollute the music badge enum.
+    @ViewBuilder
+    private func tvSignalBadge(hasSignal: Bool) -> some View {
+        HStack(spacing: 4) {
+            Circle()
+                .fill(hasSignal ? Color.red : Color.white.opacity(0.4))
+                .frame(width: 6, height: 6)
+                .opacity(hasSignal ? 1.0 : 0.6)
+            Text(hasSignal ? "LIVE" : "IDLE")
+                .font(.system(size: 9, weight: .bold))
+                .foregroundStyle(hasSignal ? .white : .white.opacity(0.6))
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 3)
+        .background(.black.opacity(0.55), in: Capsule())
+        .overlay(
+            Capsule().stroke(
+                hasSignal ? Color.red.opacity(0.6) : Color.white.opacity(0.25),
+                lineWidth: 1)
+        )
     }
 
     // MARK: - Track Info
 
     private var trackInfoView: some View {
-        VStack(spacing: 4) {
+        let isTV = manager.trackInfo?.source == .tv
+        return VStack(spacing: 4) {
             Text(manager.trackInfo?.title ?? "Not Playing")
                 .font(.title3.bold()).foregroundStyle(.white).lineLimit(1)
 
-            if let artistNav = artistBrowseItem {
-                NavigationLink {
-                    ArtistDetailView(artistItem: artistNav, searchManager: searchManager, manager: manager)
-                } label: {
+            // For TV input the codec ("Dolby Atmos · MAT") is already
+            // shown by the format badge in `tvFormatPanel` below, so
+            // skip the artist/album subtitle rows entirely — repeating
+            // it here just creates visual noise and the user already
+            // complained about the duplicate Dolby Atmos label.
+            if !isTV {
+                if let artistNav = artistBrowseItem {
+                    NavigationLink {
+                        ArtistDetailView(artistItem: artistNav, searchManager: searchManager, manager: manager)
+                    } label: {
+                        Text(manager.trackInfo?.artist ?? "—")
+                            .font(.body).foregroundStyle(manager.albumArtDominantColor ?? .white.opacity(0.7)).lineLimit(1)
+                    }
+                    .buttonStyle(.plain)
+                } else {
                     Text(manager.trackInfo?.artist ?? "—")
-                        .font(.body).foregroundStyle(manager.albumArtDominantColor ?? .white.opacity(0.7)).lineLimit(1)
+                        .font(.body).foregroundStyle(.white.opacity(0.7)).lineLimit(1)
                 }
-                .buttonStyle(.plain)
-            } else {
-                Text(manager.trackInfo?.artist ?? "—")
-                    .font(.body).foregroundStyle(.white.opacity(0.7)).lineLimit(1)
-            }
 
-            if let albumNav = albumBrowseItem {
-                NavigationLink {
-                    AlbumDetailView(albumItem: albumNav, searchManager: searchManager, manager: manager)
-                } label: {
+                if let albumNav = albumBrowseItem {
+                    NavigationLink {
+                        AlbumDetailView(albumItem: albumNav, searchManager: searchManager, manager: manager)
+                    } label: {
+                        Text(manager.trackInfo?.album ?? "")
+                            .font(.subheadline).foregroundStyle(.white.opacity(0.55)).lineLimit(1)
+                    }
+                    .buttonStyle(.plain)
+                } else {
                     Text(manager.trackInfo?.album ?? "")
-                        .font(.subheadline).foregroundStyle(.white.opacity(0.55)).lineLimit(1)
+                        .font(.subheadline).foregroundStyle(.white.opacity(0.45)).lineLimit(1)
                 }
-                .buttonStyle(.plain)
-            } else {
-                Text(manager.trackInfo?.album ?? "")
-                    .font(.subheadline).foregroundStyle(.white.opacity(0.45)).lineLimit(1)
             }
         }
     }
@@ -1262,52 +1359,21 @@ struct NowPlayingOverlay: View {
         }
     }
 
-    /// TV input has no scrubbable timeline (live stream, no duration). We
-    /// keep the same vertical slot the music slider lives in — a static
-    /// "LIVE" bar on top and the format badge in the same row the audio-
-    /// quality capsule normally occupies — so the layout stays consistent
-    /// with everything else.
+    /// TV input has no scrubbable timeline. The signal status now lives
+    /// on the album-art bottom-left (next to where the music badge would
+    /// be), so this row only needs to carry the audio format chip.
+    /// The slot height is fixed so switching between signal/no-signal
+    /// doesn't shift everything below it.
     @ViewBuilder
     private var tvFormatPanel: some View {
         let format = manager.trackInfo?.tvFormat
-        let hasSignal = format?.hasSignal ?? true
-        VStack(spacing: 4) {
-            // Standin for the slider: a thin track with a centered LIVE / IDLE
-            // pill. Same vertical footprint as `ThumblessSlider`, no
-            // interactive affordance because there's nothing to scrub.
-            ZStack {
-                Capsule()
-                    .fill(.white.opacity(0.12))
-                    .frame(height: 4)
-                HStack(spacing: 4) {
-                    Circle()
-                        .fill(hasSignal ? Color.red : Color.white.opacity(0.4))
-                        .frame(width: 6, height: 6)
-                    Text(hasSignal ? "LIVE" : "IDLE")
-                        .font(.system(size: 9, weight: .bold))
-                }
-                .padding(.horizontal, 8)
-                .padding(.vertical, 3)
-                .background(Color.black.opacity(0.5), in: Capsule())
-                .overlay(
-                    Capsule().stroke(
-                        hasSignal ? Color.red.opacity(0.6) : Color.white.opacity(0.25),
-                        lineWidth: 1)
-                )
-                .foregroundStyle(hasSignal ? .white : .white.opacity(0.6))
-            }
-            .frame(height: 16)
-
-            // Format pill — only when the soundbar is actually receiving a
-            // stream. When it isn't, the "No signal" subtitle above already
-            // tells the story; showing "No input · 0" here would be noise.
+        HStack {
+            Spacer(minLength: 0)
+            // For Atmos: `[badge] <variant>` (e.g. `[●] TrueHD`); we drop
+            // channel layout because Atmos is object-based and the "2.0"
+            // in "MAT 2.0" is a protocol version, not a channel count.
             //
-            // For Atmos: render only `[badge] <variant>` (e.g. `[●] TrueHD`)
-            // and skip channel layout entirely — Atmos is object-based so
-            // fixed channel counts are meaningless, plus the "2.0" inside
-            // "MAT 2.0" is a protocol version, not a layout.
-            //
-            // For non-Atmos: codec name + channel layout as a separate slot
+            // For non-Atmos: codec + channel layout as separate slots
             // (e.g. `Multichannel PCM · 5.1`).
             if let format, format.hasSignal {
                 HStack(spacing: 4) {
@@ -1333,90 +1399,118 @@ struct NowPlayingOverlay: View {
                         }
                     }
                 }
-                .foregroundStyle(.white.opacity(0.5))
+                .foregroundStyle(.white.opacity(0.6))
                 .padding(.horizontal, 8)
                 .padding(.vertical, 2)
                 .background(.white.opacity(0.08), in: Capsule())
-                .frame(maxWidth: .infinity)
             }
+            Spacer(minLength: 0)
         }
+        .frame(height: 22)
     }
 
-    /// Two side-by-side toggle cards exposing the soundbar's TV-mode EQ
-    /// flags — Night Sound (`NightMode`) and Speech Enhancement
-    /// (`DialogLevel`). Mirrors the official Sonos app's TV controls but
-    /// keeps our visual language: capsule rows, white-on-translucent fills,
-    /// and a tinted halo + brighter background when active.
+    /// Two square-ish cards side-by-side, mirroring the Sonos S2 app's TV
+    /// audio panel: large glyph in the top-left, title + state stacked
+    /// flush-bottom-left. No accent borders or fills — the active state
+    /// just brightens the glyph and state text. Tap = toggle (Night Sound)
+    /// or open level picker (Speech Enhancement).
     private var soundbarEQPanel: some View {
         HStack(spacing: 10) {
-            soundbarEQCard(
-                title: "Night Sound",
-                systemIcon: "moon.fill",
-                isOn: manager.nightMode,
-                accent: Color(red: 0.55, green: 0.70, blue: 1.0)
-            ) {
-                UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                Task { await manager.toggleNightMode() }
-            }
-            soundbarEQCard(
-                title: "Speech Enhancement",
-                systemIcon: "waveform.badge.mic",
-                isOn: manager.speechEnhancement,
-                accent: Color(red: 1.0, green: 0.78, blue: 0.45)
-            ) {
-                UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                Task { await manager.toggleSpeechEnhancement() }
-            }
+            nightSoundCard
+            speechEnhancementCard
         }
     }
 
-    private func soundbarEQCard(
-        title: String,
-        systemIcon: String,
-        isOn: Bool,
-        accent: Color,
-        action: @escaping () -> Void
-    ) -> some View {
-        Button(action: action) {
-            VStack(alignment: .leading, spacing: 6) {
-                HStack(spacing: 6) {
-                    Image(systemName: systemIcon)
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(isOn ? accent : .white.opacity(0.55))
-                    Spacer(minLength: 0)
-                    Text(isOn ? "On" : "Off")
-                        .font(.system(size: 10, weight: .bold))
-                        .foregroundStyle(isOn ? accent : .white.opacity(0.45))
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(
-                            (isOn ? accent.opacity(0.18) : Color.white.opacity(0.08)),
-                            in: Capsule()
-                        )
-                }
-                Text(title)
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(.white.opacity(isOn ? 0.9 : 0.65))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.8)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
-            .background(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .fill(.white.opacity(isOn ? 0.14 : 0.08))
+    private var nightSoundCard: some View {
+        let isOn = manager.nightMode
+        return Button {
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            Task { await manager.toggleNightMode() }
+        } label: {
+            soundbarEQCard(
+                iconName: isOn ? "moon.fill" : "moon",
+                title: "Night Sound",
+                stateText: isOn ? "On" : "Off",
+                isOn: isOn
             )
-            .overlay(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .stroke(isOn ? accent.opacity(0.45) : Color.white.opacity(0.08), lineWidth: 1)
-            )
-            .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         }
         .buttonStyle(.plain)
-        .accessibilityLabel(title)
+        .accessibilityLabel("Night Sound")
         .accessibilityValue(isOn ? "On" : "Off")
         .accessibilityAddTraits(.isButton)
+    }
+
+    private var speechEnhancementCard: some View {
+        let level = manager.speechEnhancement
+        // SF Symbol with a slash overlay when Off matches the Sonos
+        // reference's "person with x" silhouette closely enough; the
+        // filled variant for On reads as "speech is being enhanced".
+        let icon = level.isOn ? "waveform.badge.mic" : "waveform.slash"
+        return Menu {
+            Picker("Speech Enhancement", selection: Binding(
+                get: { manager.speechEnhancement },
+                set: { newLevel in
+                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                    Task { await manager.setSpeechEnhancement(newLevel) }
+                }
+            )) {
+                ForEach(SpeechEnhancementLevel.allCases, id: \.self) { lvl in
+                    Text(lvl.label).tag(lvl)
+                }
+            }
+        } label: {
+            soundbarEQCard(
+                iconName: icon,
+                title: "Speech Enhancement",
+                stateText: level.label,
+                isOn: level.isOn
+            )
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Speech Enhancement")
+        .accessibilityValue(level.label)
+    }
+
+    /// Shared chrome for both EQ cards. Icon top-left, title + state pinned
+    /// bottom-left. Height is **locked** to 92pt — without a hard cap the
+    /// inner `Spacer` competes with the outer page `Spacer`s and the cards
+    /// balloon to fill any leftover vertical slack, breaking the layout.
+    private func soundbarEQCard(
+        iconName: String,
+        title: String,
+        stateText: String,
+        isOn: Bool
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Image(systemName: iconName)
+                .font(.system(size: 20, weight: .regular))
+                .foregroundStyle(.white.opacity(isOn ? 0.95 : 0.55))
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            Spacer(minLength: 0)
+
+            Text(title)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(.white.opacity(isOn ? 1.0 : 0.85))
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            Text(stateText)
+                .font(.system(size: 11, weight: .regular))
+                .foregroundStyle(.white.opacity(isOn ? 0.7 : 0.45))
+                .lineLimit(1)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity)
+        .frame(height: 92)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(.white.opacity(0.08))
+        )
+        .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
     }
 
     /// Standard music timeline + audio-quality badge. Extracted so the TV-mode
@@ -1444,6 +1538,17 @@ struct NowPlayingOverlay: View {
                 Spacer()
 
                 if let quality = manager.trackInfo?.audioQuality {
+                    // When a Dolby Atmos badge is present, the badge itself
+                    // already reads "Dolby Atmos" — repeating it as text
+                    // creates the duplicate the user complained about. Hand
+                    // the label through `badgeCompanionLabel` which strips
+                    // the redundant prefix (returning nil when nothing
+                    // remains, e.g. plain music Atmos with no transport
+                    // variant). Lossless/Hi-Res keep their full label since
+                    // the badge is glyph-only.
+                    let companion: String? = quality.badgeAssetImageName != nil
+                        ? AudioQuality.badgeCompanionLabel(forQualityLabel: quality.label)
+                        : quality.label
                     HStack(spacing: 4) {
                         if let badge = quality.badgeAssetImageName {
                             Image(badge)
@@ -1453,11 +1558,18 @@ struct NowPlayingOverlay: View {
                                 .frame(height: 11)
                                 .accessibilityLabel(quality.label)
                         }
-                        Text(quality.label)
-                            .font(.system(size: 9, weight: .semibold))
+                        if let companion {
+                            Text(companion)
+                                .font(.system(size: 9, weight: .semibold))
+                        }
                         if let sr = quality.sampleRate, let bd = quality.bitDepth {
-                            Text("·")
-                                .font(.system(size: 9))
+                            // Only draw the separator if there's a preceding
+                            // text token; otherwise the dot looks orphaned
+                            // sitting alone next to the badge.
+                            if companion != nil {
+                                Text("·")
+                                    .font(.system(size: 9))
+                            }
                             Text("\(bd)/\(sr / 1000)kHz")
                                 .font(.system(size: 9, weight: .medium))
                         }
@@ -1811,16 +1923,24 @@ struct MiniPlayerBar: View {
             }
         } label: {
             HStack(spacing: 12) {
-                if let image = manager.albumArtImage {
+                let isTV = manager.trackInfo?.source == .tv
+                let artSize: CGFloat = inSystemAccessory ? 32 : 44
+                let cornerRadius: CGFloat = inSystemAccessory ? 6 : 8
+                if isTV {
+                    // TV input never has cover art — show a `tv` glyph
+                    // instead of the music note so the mini-player matches
+                    // the home card and full player.
+                    RoundedRectangle(cornerRadius: cornerRadius).fill(.quaternary)
+                        .frame(width: artSize, height: artSize)
+                        .overlay { Image(systemName: "tv").font(.caption).foregroundStyle(.tertiary) }
+                } else if let image = manager.albumArtImage {
                     Image(uiImage: image)
                         .resizable().aspectRatio(contentMode: .fill)
-                        .frame(width: inSystemAccessory ? 32 : 44,
-                               height: inSystemAccessory ? 32 : 44)
-                        .clipShape(RoundedRectangle(cornerRadius: inSystemAccessory ? 6 : 8))
+                        .frame(width: artSize, height: artSize)
+                        .clipShape(RoundedRectangle(cornerRadius: cornerRadius))
                 } else {
-                    RoundedRectangle(cornerRadius: inSystemAccessory ? 6 : 8).fill(.quaternary)
-                        .frame(width: inSystemAccessory ? 32 : 44,
-                               height: inSystemAccessory ? 32 : 44)
+                    RoundedRectangle(cornerRadius: cornerRadius).fill(.quaternary)
+                        .frame(width: artSize, height: artSize)
                         .overlay { Image(systemName: "music.note").font(.caption).foregroundStyle(.tertiary) }
                 }
 

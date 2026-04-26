@@ -127,9 +127,15 @@ struct SonosProvider: TimelineProvider {
                 }
             }
 
-            // Audio quality — try Cloud API if UPnP didn't provide codec info.
-            var audioQualityLabel = info.audioQuality?.label ?? SharedStorage.cachedAudioQualityLabel
-            if info.audioQuality == nil,
+            // Audio quality — try Cloud API if UPnP didn't provide codec
+            // info. TV input has no `audioQuality` (it's not music) but does
+            // have `tvFormat`, so fall back to its `geekLabel` and skip the
+            // cloud probe entirely (cloud doesn't know the soundbar's HDMI
+            // stream codec).
+            var audioQualityLabel = info.audioQuality?.label
+                ?? info.tvFormat?.geekLabel
+                ?? SharedStorage.cachedAudioQualityLabel
+            if info.audioQuality == nil, info.source != .tv,
                let groupId = SharedStorage.cloudGroupId,
                let token = SharedStorage.cloudAccessToken,
                Date() < SharedStorage.cloudTokenExpiry {
@@ -213,7 +219,8 @@ struct SonosWidgetSmallView: View {
 
     @ViewBuilder
     private func artThumb(size: CGFloat) -> some View {
-        if let data = entry.albumArtData, let img = UIImage(data: data) {
+        let isTV = entry.playbackSource == .tv
+        if !isTV, let data = entry.albumArtData, let img = UIImage(data: data) {
             Image(uiImage: img).resizable().aspectRatio(contentMode: .fill)
                 .frame(width: size, height: size)
                 .clipShape(RoundedRectangle(cornerRadius: 6))
@@ -221,9 +228,30 @@ struct SonosWidgetSmallView: View {
         } else {
             RoundedRectangle(cornerRadius: 6).fill(.white.opacity(0.15))
                 .frame(width: size, height: size)
-                .overlay { Image(systemName: "music.note").font(.caption).foregroundStyle(.white.opacity(0.4)) }
+                .overlay {
+                    Image(systemName: isTV ? "tv" : "music.note")
+                        .font(.caption)
+                        .foregroundStyle(.white.opacity(0.4))
+                }
         }
     }
+}
+
+// MARK: - Medium widget typography
+
+/// Keeps the two uppercase meta rows visually one system (same size, weight,
+/// design, tracking) — previously 8pt semibold vs 7pt bold read as two fonts.
+private enum SonosWidgetMediumMeta {
+    static let font = Font.system(size: 8, weight: .semibold, design: .rounded)
+    static let tracking: CGFloat = 0.45
+    static let textColor = Color.white.opacity(0.42)
+    static let badgeTint = Color.white.opacity(0.48)
+    static let qualityBadgeHeight: CGFloat = 9
+    /// Main title + secondary lines share `.rounded` so they read as one stack
+    /// vs. the old mix of default-design dynamic type + fixed meta sizes.
+    static let titleFont = Font.system(size: 15, weight: .bold, design: .rounded)
+    static let artistFont = Font.system(.caption, design: .rounded).weight(.medium)
+    static let albumFont = Font.system(.caption2, design: .rounded).weight(.medium)
 }
 
 // MARK: - Medium Widget
@@ -247,31 +275,42 @@ struct SonosWidgetMediumView: View {
                                 Text(entry.isPlaying
                                      ? "NOW PLAYING ON \(name.uppercased())\(extra)"
                                      : "CONTINUE ON \(name.uppercased())\(extra)")
-                                    .font(.system(size: 8, weight: .semibold))
-                                    .tracking(0.5)
-                                    .foregroundStyle(.white.opacity(0.45))
+                                    .font(SonosWidgetMediumMeta.font)
+                                    .tracking(SonosWidgetMediumMeta.tracking)
+                                    .foregroundStyle(SonosWidgetMediumMeta.textColor)
                                     .lineLimit(1)
                             }
                             if let quality = entry.audioQualityLabel {
+                                let badge = AudioQuality.badgeImageName(forQualityLabel: quality)
+                                // When the badge is itself a wordmark (Dolby
+                                // Atmos), drop the redundant "Dolby Atmos"
+                                // prefix from the text — keep just the
+                                // transport variant ("MAT" / "TrueHD" / …).
+                                // For badge-less / glyph-only badges
+                                // (Lossless), the companion stays the full
+                                // label.
+                                let companion = AudioQuality.badgeCompanionLabel(forQualityLabel: quality)
                                 HStack(alignment: .center, spacing: 4) {
                                     Text("IN")
-                                        .font(.system(size: 7, weight: .bold))
-                                        .tracking(0.8)
-                                        .foregroundStyle(.white.opacity(0.3))
-                                    if let badge = AudioQuality.badgeImageName(forQualityLabel: quality) {
+                                        .font(SonosWidgetMediumMeta.font)
+                                        .tracking(SonosWidgetMediumMeta.tracking)
+                                        .foregroundStyle(SonosWidgetMediumMeta.textColor)
+                                    if let badge {
                                         Image(badge)
                                             .resizable()
                                             .renderingMode(.template)
-                                            .foregroundStyle(.white.opacity(0.45))
+                                            .foregroundStyle(SonosWidgetMediumMeta.badgeTint)
                                             .scaledToFit()
-                                            .frame(height: 8)
+                                            .frame(height: SonosWidgetMediumMeta.qualityBadgeHeight)
                                             .accessibilityHidden(true)
                                     }
-                                    Text(quality.uppercased())
-                                        .font(.system(size: 7, weight: .bold))
-                                        .tracking(0.8)
-                                        .foregroundStyle(.white.opacity(0.3))
-                                        .lineLimit(1)
+                                    if let companion {
+                                        Text(companion.uppercased())
+                                            .font(SonosWidgetMediumMeta.font)
+                                            .tracking(SonosWidgetMediumMeta.tracking)
+                                            .foregroundStyle(SonosWidgetMediumMeta.textColor)
+                                            .lineLimit(1)
+                                    }
                                 }
                             }
                         }
@@ -285,10 +324,19 @@ struct SonosWidgetMediumView: View {
 
                     Spacer(minLength: 6)
 
-                    Text(entry.trackTitle).font(.subheadline.bold()).foregroundStyle(.white).lineLimit(2)
-                    Text(entry.artist).font(.caption).foregroundStyle(.white.opacity(0.7)).lineLimit(1)
+                    Text(entry.trackTitle)
+                        .font(SonosWidgetMediumMeta.titleFont)
+                        .foregroundStyle(.white)
+                        .lineLimit(2)
+                    Text(entry.artist)
+                        .font(SonosWidgetMediumMeta.artistFont)
+                        .foregroundStyle(.white.opacity(0.72))
+                        .lineLimit(1)
                         .padding(.top, 1)
-                    Text(entry.album).font(.caption2).foregroundStyle(.white.opacity(0.45)).lineLimit(1)
+                    Text(entry.album)
+                        .font(SonosWidgetMediumMeta.albumFont)
+                        .foregroundStyle(.white.opacity(0.48))
+                        .lineLimit(1)
 
                     Spacer(minLength: 6)
 
@@ -337,7 +385,8 @@ struct SonosWidgetMediumView: View {
 
     @ViewBuilder
     private var albumArt: some View {
-        if let data = entry.albumArtData, let img = UIImage(data: data) {
+        let isTV = entry.playbackSource == .tv
+        if !isTV, let data = entry.albumArtData, let img = UIImage(data: data) {
             Image(uiImage: img).resizable().aspectRatio(contentMode: .fill)
                 .frame(width: 120, height: 120)
                 .clipShape(RoundedRectangle(cornerRadius: 12))
@@ -345,7 +394,11 @@ struct SonosWidgetMediumView: View {
         } else {
             RoundedRectangle(cornerRadius: 12).fill(.white.opacity(0.15))
                 .frame(width: 120, height: 120)
-                .overlay { Image(systemName: "music.note").font(.largeTitle).foregroundStyle(.white.opacity(0.4)) }
+                .overlay {
+                    Image(systemName: isTV ? "tv" : "music.note")
+                        .font(.largeTitle)
+                        .foregroundStyle(.white.opacity(0.4))
+                }
         }
     }
 }

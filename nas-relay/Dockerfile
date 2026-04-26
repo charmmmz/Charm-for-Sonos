@@ -1,11 +1,15 @@
+# NPM registry: default is the public registry. If your build host cannot resolve
+# registry.npmmirror.com, use the default or set DNS. For China, override at build:
+#   docker build --build-arg NPM_REGISTRY=https://registry.npmmirror.com .
 # --- Build stage -----------------------------------------------------------
 FROM docker.m.daocloud.io/library/node:20-alpine AS builder
+ARG NPM_REGISTRY=https://registry.npmjs.org
 WORKDIR /app
-RUN npm config set registry https://registry.npmmirror.com \
+RUN npm config set registry ${NPM_REGISTRY} \
  && npm config set fetch-retries 5 \
  && npm config set fetch-retry-mintimeout 20000 \
  && npm config set fetch-retry-maxtimeout 120000 \
- && npm config set network-timeout 120000 \
+ && npm config set fetch-timeout 120000 \
  && npm config set audit false \
  && npm config set fund false
 COPY package*.json tsconfig.json ./
@@ -15,14 +19,15 @@ RUN npm run build
 
 # --- Runtime stage ---------------------------------------------------------
 FROM docker.m.daocloud.io/library/node:20-alpine
+ARG NPM_REGISTRY=https://registry.npmjs.org
 WORKDIR /app
 ENV NODE_ENV=production
 
-RUN npm config set registry https://registry.npmmirror.com \
+RUN npm config set registry ${NPM_REGISTRY} \
  && npm config set fetch-retries 5 \
  && npm config set fetch-retry-mintimeout 20000 \
  && npm config set fetch-retry-maxtimeout 120000 \
- && npm config set network-timeout 120000 \
+ && npm config set fetch-timeout 120000 \
  && npm config set audit false \
  && npm config set fund false
 COPY package*.json ./
