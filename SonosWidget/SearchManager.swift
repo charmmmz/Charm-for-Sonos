@@ -92,6 +92,12 @@ final class SearchManager {
     /// new search commits (e.g. to re-fetch the selected service tab).
     private(set) var lastSearchQuery = ""
     private var hasProbed = false
+    /// Tracks whether `loadBrowseContent` has finished at least once during
+    /// this session. Detail views (Artist / Album / Playlist) consult this so
+    /// they can lazily trigger the load when the user opens a detail page
+    /// without ever visiting the Browse tab — otherwise `isFavorited` always
+    /// returns false because `favorites` is still empty.
+    private(set) var hasLoadedBrowseContent = false
 
     init() {
         restoreCachedAccounts()
@@ -784,6 +790,33 @@ final class SearchManager {
         }
 
         isLoadingBrowse = false
+        hasLoadedBrowseContent = true
+    }
+
+    /// One-shot Browse content loader for callers outside the Search/Browse
+    /// tab. Detail views call this on appear so the heart icon picks up the
+    /// real Sonos Favorites state without forcing the user to open Browse
+    /// first. No-ops once the browse content has been loaded for the session;
+    /// SearchView's own `loadBrowseForCurrentBackend` keeps providing the
+    /// reactive refresh path on backend / speaker changes.
+    func ensureBrowseContentLoaded(manager: SonosManager) async {
+        if hasLoadedBrowseContent || isLoadingBrowse { return }
+        switch manager.transportBackend {
+        case .cloud:
+            guard let token = await SonosAuth.shared.validAccessToken(),
+                  let householdId = SonosAuth.shared.householdId else { return }
+            if manager.currentCloudGroupId == nil {
+                await manager.resolveCloudGroupId()
+            }
+            guard let gid = manager.currentCloudGroupId else { return }
+            await loadBrowseContent(
+                cloudMode: true,
+                cloudContext: .init(token: token, householdId: householdId, groupId: gid))
+        case .lan:
+            await loadBrowseContent()
+        case .unknown:
+            return
+        }
     }
 
     /// What SearchManager needs from SonosManager when in cloud / remote mode.

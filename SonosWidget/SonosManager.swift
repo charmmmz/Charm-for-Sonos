@@ -1888,7 +1888,12 @@ final class SonosManager {
             // No existing activity — create one (always, even during TRANSITIONING).
             let state = makeActivityState()
             let attrs = SonosActivityAttributes(speakerName: speaker.name)
-            let content = ActivityContent(state: state, staleDate: nil)
+            // `staleDate` is refreshed on every `update()` below so an alive
+            // app keeps the activity fresh indefinitely. After force-quit the
+            // app stops refreshing, this date eventually passes, and iOS
+            // marks the activity stale (greyed out) and dismisses it. Without
+            // a stale date force-quit Live Activities can linger for hours.
+            let content = ActivityContent(state: state, staleDate: Self.liveActivityStaleDate())
 
             // First try the user's preferred mode. If that's `.token` (relay
             // looks reachable) but the app doesn't actually have an
@@ -1941,7 +1946,17 @@ final class SonosManager {
         guard transportState != .transitioning else { return }
 
         let state = makeActivityState()
-        Task { await currentActivity?.update(.init(state: state, staleDate: nil)) }
+        Task {
+            await currentActivity?.update(
+                .init(state: state, staleDate: Self.liveActivityStaleDate()))
+        }
+    }
+
+    /// Roll the Live Activity's stale window forward 60 min on every refresh.
+    /// Force-quit-cleanup: iOS will dismiss the activity once this date
+    /// passes without any further `update()`s extending it.
+    nonisolated static func liveActivityStaleDate() -> Date {
+        Date().addingTimeInterval(60 * 60)
     }
 
     /// Drains `Activity.pushTokenUpdates` and POSTs each rotation to the
@@ -2071,6 +2086,7 @@ final class SonosManager {
         // right mark.
         SharedStorage.cachedAudioQualityLabel = trackInfo?.audioQuality?.label
             ?? trackInfo?.tvFormat?.geekLabel
+        SharedStorage.cachedIsLiveStream = trackInfo?.isLiveStream ?? false
         SharedStorage.cachedGroupMemberCount = currentGroupMembers.filter { !$0.isInvisible }.count
         // Keep cloudGroupId in sync so the widget can call Cloud API independently.
         if let gid = cloudGroupId { SharedStorage.cloudGroupId = gid }

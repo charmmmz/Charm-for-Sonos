@@ -83,6 +83,15 @@ enum SharedStorage {
         set { defaults.set(newValue, forKey: "audioQualityLabel") }
     }
 
+    /// Cached `TrackInfo.isLiveStream` flag. Lets the widget swap its
+    /// transport row to a single Stop button (and the Live Activity hide
+    /// its progress bar) for Apple Music 1 / live radio without forcing
+    /// every consumer to recompute from `TrackInfo`.
+    nonisolated static var cachedIsLiveStream: Bool {
+        get { defaults.bool(forKey: "isLiveStream") }
+        set { defaults.set(newValue, forKey: "isLiveStream") }
+    }
+
     /// Timestamp after which fetchLiveEntry may overwrite isPlaying from the device.
     /// Set by PlayPauseIntent to prevent the live fetch from reverting the optimistic update.
     nonisolated static var playStateLockUntil: Date {

@@ -57,6 +57,13 @@ struct AlbumDetailView: View {
         }
         .task { await loadAlbum() }
         .task(id: coverURL) { await loadCoverImage() }
+        .task {
+            // Sonos Favorites are only fetched by SearchView's task; if the
+            // user opens this page before visiting Browse, `isFavorited`
+            // would always return false. Trigger a one-shot load and resync.
+            await searchManager.ensureBrowseContentLoaded(manager: manager)
+            isFavorited = searchManager.isFavorited(albumItem)
+        }
         .onAppear { isFavorited = searchManager.isFavorited(albumItem) }
         .toast($toastMessage)
     }

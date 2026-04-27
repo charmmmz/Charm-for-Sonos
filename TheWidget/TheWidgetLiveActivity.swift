@@ -61,26 +61,35 @@ struct SonosLiveActivity: Widget {
                 }
                 DynamicIslandExpandedRegion(.bottom) {
                     let accent = themeColor(from: context.state.dominantColorHex)
+                    let isLive = context.state.isLiveStream
                     VStack(spacing: 8) {
                         LiveProgressView(state: context.state)
                         HStack(spacing: 40) {
-                            Button(intent: PreviousTrackIntent()) {
-                                Image(systemName: "backward.fill")
-                                    .font(.callout)
-                                    .foregroundStyle(.white.opacity(0.85))
-                            }.buttonStyle(.plain)
+                            if isLive {
+                                Button(intent: PlayPauseIntent()) {
+                                    Image(systemName: context.state.isPlaying ? "stop.fill" : "play.fill")
+                                        .font(.title2)
+                                        .foregroundStyle(accent)
+                                }.buttonStyle(.plain)
+                            } else {
+                                Button(intent: PreviousTrackIntent()) {
+                                    Image(systemName: "backward.fill")
+                                        .font(.callout)
+                                        .foregroundStyle(.white.opacity(0.85))
+                                }.buttonStyle(.plain)
 
-                            Button(intent: PlayPauseIntent()) {
-                                Image(systemName: context.state.isPlaying ? "pause.fill" : "play.fill")
-                                    .font(.title2)
-                                    .foregroundStyle(accent)
-                            }.buttonStyle(.plain)
+                                Button(intent: PlayPauseIntent()) {
+                                    Image(systemName: context.state.isPlaying ? "pause.fill" : "play.fill")
+                                        .font(.title2)
+                                        .foregroundStyle(accent)
+                                }.buttonStyle(.plain)
 
-                            Button(intent: NextTrackIntent()) {
-                                Image(systemName: "forward.fill")
-                                    .font(.callout)
-                                    .foregroundStyle(.white.opacity(0.85))
-                            }.buttonStyle(.plain)
+                                Button(intent: NextTrackIntent()) {
+                                    Image(systemName: "forward.fill")
+                                        .font(.callout)
+                                        .foregroundStyle(.white.opacity(0.85))
+                                }.buttonStyle(.plain)
+                            }
                         }
                     }
                     .padding(.horizontal, 4)
@@ -143,19 +152,27 @@ private struct LockScreenView: View {
                 Spacer(minLength: 0)
 
                 HStack(spacing: 14) {
-                    Button(intent: PreviousTrackIntent()) {
-                        Image(systemName: "backward.fill").font(.callout)
-                    }.buttonStyle(.plain)
+                    if context.state.isLiveStream {
+                        Button(intent: PlayPauseIntent()) {
+                            Image(systemName: context.state.isPlaying ? "stop.fill" : "play.fill")
+                                .font(.title3)
+                                .foregroundStyle(accent)
+                        }.buttonStyle(.plain)
+                    } else {
+                        Button(intent: PreviousTrackIntent()) {
+                            Image(systemName: "backward.fill").font(.callout)
+                        }.buttonStyle(.plain)
 
-                    Button(intent: PlayPauseIntent()) {
-                        Image(systemName: context.state.isPlaying ? "pause.fill" : "play.fill")
-                            .font(.title3)
-                            .foregroundStyle(accent)
-                    }.buttonStyle(.plain)
+                        Button(intent: PlayPauseIntent()) {
+                            Image(systemName: context.state.isPlaying ? "pause.fill" : "play.fill")
+                                .font(.title3)
+                                .foregroundStyle(accent)
+                        }.buttonStyle(.plain)
 
-                    Button(intent: NextTrackIntent()) {
-                        Image(systemName: "forward.fill").font(.callout)
-                    }.buttonStyle(.plain)
+                        Button(intent: NextTrackIntent()) {
+                            Image(systemName: "forward.fill").font(.callout)
+                        }.buttonStyle(.plain)
+                    }
                 }
             }
 
@@ -227,10 +244,24 @@ private struct LiveProgressView: View {
     var body: some View {
         let accent = themeColor(from: state.dominantColorHex)
 
-        if state.isPlaying,
-           let start = state.startedAt,
-           let end = state.endsAt,
-           end > Date() {
+        if state.isLiveStream {
+            HStack(spacing: 6) {
+                Capsule()
+                    .fill(.white.opacity(0.18))
+                    .frame(height: 3)
+                Text("LIVE")
+                    .font(.system(size: 9, weight: .heavy))
+                    .tracking(1.2)
+                    .foregroundStyle(.white.opacity(0.78))
+                Capsule()
+                    .fill(.white.opacity(0.18))
+                    .frame(height: 3)
+            }
+            .frame(height: 12)
+        } else if state.isPlaying,
+                  let start = state.startedAt,
+                  let end = state.endsAt,
+                  end > Date() {
             ProgressView(timerInterval: start...end, countsDown: false) {
                 EmptyView()
             } currentValueLabel: {

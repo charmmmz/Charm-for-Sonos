@@ -916,7 +916,7 @@ struct NowPlayingOverlay: View {
         // our 64pt horizontal inset, producing a negative `artSz` that
         // SwiftUI complains about ("Invalid frame dimension"). The lower
         // bound never renders in practice; it just keeps the frame valid.
-        let artSz = max(1, min(geo.size.width - 64, h * 0.45))
+        let artSz = max(1, min(geo.size.width - 32, h * 0.55))
         let s = max(0.5, h / 760)
 
         return VStack(spacing: 0) {
@@ -1100,26 +1100,44 @@ struct NowPlayingOverlay: View {
 
     @ViewBuilder
     private var artBackground: some View {
+        // Apple Music-style immersive backdrop: a dominant-color vertical
+        // gradient that fades to black at the bottom, optionally tinted by a
+        // very-soft blurred copy of the album art for organic texture.
+        let dominant = manager.albumArtDominantColor ?? Color(white: 0.12)
         ZStack {
-            Color.black
+            LinearGradient(
+                colors: [
+                    dominant,
+                    dominant.opacity(0.55),
+                    Color.black
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+
             if let image = manager.albumArtImage {
                 Image(uiImage: image)
                     .resizable()
                     .aspectRatio(contentMode: .fill)
-                    .blur(radius: 80)
-                    .scaleEffect(1.5)
+                    .blur(radius: 120)
+                    .scaleEffect(1.6)
                     .clipped()
+                    .opacity(0.55)
+                    .blendMode(.softLight)
                     .id(manager.trackInfo?.albumArtURL)
                     .transition(.opacity)
-                LinearGradient(
-                    colors: [.black.opacity(0.4), .black.opacity(0.7)],
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
             }
+
+            // Light vignette so transport text/icons stay readable on bright art.
+            LinearGradient(
+                colors: [.black.opacity(0.05), .black.opacity(0.35)],
+                startPoint: .top,
+                endPoint: .bottom
+            )
         }
         .ignoresSafeArea()
         .animation(.easeInOut(duration: 0.8), value: manager.trackInfo?.albumArtURL)
+        .animation(.easeInOut(duration: 0.8), value: manager.albumArtDominantColor)
     }
 
     // MARK: - Album Art
@@ -1172,20 +1190,36 @@ struct NowPlayingOverlay: View {
                 }
 
             if !isTV, let image = manager.albumArtImage {
-                Image(uiImage: image)
-                    .resizable().aspectRatio(1, contentMode: .fit)
-                    .clipShape(RoundedRectangle(cornerRadius: 16))
-                    .shadow(color: .black.opacity(0.3), radius: 20, y: 10)
-                    .overlay(alignment: .bottomLeading) {
-                        // Hide source badge in landscape — art is too small for it to read well.
-                        if verticalSizeClass != .compact,
-                           let source = manager.trackInfo?.source, source != .unknown {
-                            SourceBadgeView(source: source, tintColor: manager.albumArtDominantColor)
-                                .padding(10)
-                        }
+                ZStack(alignment: .bottomLeading) {
+                    Image(uiImage: image)
+                        .resizable().aspectRatio(1, contentMode: .fit)
+                        .clipShape(RoundedRectangle(cornerRadius: 18))
+                        // Soft fade into the page background — only the
+                        // bottom ~12% blends, so the cover stays fully
+                        // legible while losing its hard rectangular edge.
+                        .mask(
+                            LinearGradient(
+                                stops: [
+                                    .init(color: .black, location: 0.0),
+                                    .init(color: .black, location: 0.88),
+                                    .init(color: .clear, location: 1.0)
+                                ],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            )
+                        )
+                        .shadow(color: .black.opacity(0.45), radius: 32, y: 16)
+
+                    // Source badge sits on top of the masked image so it
+                    // doesn't fade out with the bottom edge.
+                    if verticalSizeClass != .compact,
+                       let source = manager.trackInfo?.source, source != .unknown {
+                        SourceBadgeView(source: source, tintColor: manager.albumArtDominantColor)
+                            .padding(10)
                     }
-                    .id(manager.trackInfo?.albumArtURL)
-                    .transition(.opacity)
+                }
+                .id(manager.trackInfo?.albumArtURL)
+                .transition(.opacity)
             }
         }
         .frame(width: size, height: size)
@@ -1351,9 +1385,32 @@ struct NowPlayingOverlay: View {
     private var progressContent: some View {
         if manager.trackInfo?.source == .tv {
             tvFormatPanel
+        } else if manager.trackInfo?.isLiveStream == true {
+            liveProgressContent
         } else {
             musicProgressContent
         }
+    }
+
+    /// Live broadcast indicator — replaces the seek bar for streams that
+    /// have no fixed duration (Apple Music 1, TuneIn live stations,
+    /// internet radio, line-in / AirPlay). Mimics Apple Music's player:
+    /// thin rule on each side with a centered "LIVE" pill.
+    private var liveProgressContent: some View {
+        HStack(spacing: 8) {
+            Capsule()
+                .fill(.white.opacity(0.18))
+                .frame(height: 3)
+            Text("LIVE")
+                .font(.system(size: 11, weight: .heavy))
+                .tracking(1.4)
+                .foregroundStyle(.white.opacity(0.78))
+            Capsule()
+                .fill(.white.opacity(0.18))
+                .frame(height: 3)
+        }
+        .frame(height: 18)
+        .padding(.horizontal, 4)
     }
 
     /// TV input has no scrubbable timeline. The signal status now lives
@@ -1593,7 +1650,39 @@ struct NowPlayingOverlay: View {
 
     // MARK: - Playback Controls
 
+    @ViewBuilder
     private var playbackControls: some View {
+        if manager.trackInfo?.isLiveStream == true {
+            liveBroadcastControls
+        } else {
+            standardPlaybackControls
+        }
+    }
+
+    /// Live-stream variant: a single Stop/Play button. Skip / shuffle /
+    /// repeat are intentionally hidden — the underlying transport doesn't
+    /// honor them for live broadcasts and the official Apple Music UI
+    /// presents the same pared-down layout.
+    private var liveBroadcastControls: some View {
+        let compact = verticalSizeClass == .compact
+        let stopSize: CGFloat = compact ? 30 : 40
+        let playFrame: CGFloat = compact ? 44 : 60
+
+        return HStack {
+            Spacer()
+            Button { Task { await manager.togglePlayPause() } } label: {
+                Image(systemName: manager.isPlaying ? "stop.fill" : "play.fill")
+                    .font(.system(size: stopSize))
+                    .frame(width: playFrame, height: playFrame)
+                    .contentTransition(.symbolEffect(.replace))
+            }
+            Spacer()
+        }
+        .foregroundStyle(.white)
+        .padding(.horizontal, 32)
+    }
+
+    private var standardPlaybackControls: some View {
         let compact = verticalSizeClass == .compact
         let playSize: CGFloat   = compact ? 34 : 44
         let skipSize: CGFloat   = compact ? 20 : 26

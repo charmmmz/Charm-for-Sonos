@@ -104,6 +104,7 @@ enum IntentHelper {
             SharedStorage.cachedAudioQualityLabel = info.audioQuality?.label
                 ?? info.tvFormat?.geekLabel
             SharedStorage.cachedPlaybackSource = info.source.rawValue
+            SharedStorage.cachedIsLiveStream = info.isLiveStream
 
             if let urlStr = info.albumArtURL, let url = URL(string: urlStr),
                let (data, _) = try? await noProxySession.data(from: url) {

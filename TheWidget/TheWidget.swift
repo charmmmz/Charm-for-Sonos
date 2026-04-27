@@ -18,6 +18,10 @@ struct SonosEntry: TimelineEntry {
     let playbackSource: PlaybackSource
     let dominantColorHex: String?
     let audioQualityLabel: String?
+    /// Apple Music 1 / TuneIn live radio / line-in / AirPlay — anything
+    /// without a fixed track length. Drives the "show stop, hide skip"
+    /// transport variant in the widget views.
+    let isLiveStream: Bool
 
     var dominantColor: Color? { dominantColorHex.flatMap(Color.init(hex:)) }
 
@@ -26,7 +30,7 @@ struct SonosEntry: TimelineEntry {
                    album: "Album", isPlaying: true, albumArtData: nil,
                    isConfigured: true, speakerName: "Living Room", groupMemberCount: 1,
                    playbackSource: .unknown, dominantColorHex: nil,
-                   audioQualityLabel: "Lossless")
+                   audioQualityLabel: "Lossless", isLiveStream: false)
     }
 
     static var unconfigured: SonosEntry {
@@ -34,7 +38,7 @@ struct SonosEntry: TimelineEntry {
                    isPlaying: false, albumArtData: nil,
                    isConfigured: false, speakerName: nil, groupMemberCount: 1,
                    playbackSource: .unknown, dominantColorHex: nil,
-                   audioQualityLabel: nil)
+                   audioQualityLabel: nil, isLiveStream: false)
     }
 }
 
@@ -88,7 +92,8 @@ struct SonosProvider: TimelineProvider {
             groupMemberCount: SharedStorage.cachedGroupMemberCount,
             playbackSource: source,
             dominantColorHex: SharedStorage.cachedDominantColorHex,
-            audioQualityLabel: SharedStorage.cachedAudioQualityLabel
+            audioQualityLabel: SharedStorage.cachedAudioQualityLabel,
+            isLiveStream: SharedStorage.cachedIsLiveStream
         )
     }
 
@@ -147,6 +152,8 @@ struct SonosProvider: TimelineProvider {
                 }
             }
 
+            let isLiveStream = info.isLiveStream
+            SharedStorage.cachedIsLiveStream = isLiveStream
             return SonosEntry(date: .now, trackTitle: info.title, artist: info.artist,
                               album: info.album, isPlaying: isPlaying,
                               albumArtData: artData, isConfigured: true,
@@ -154,7 +161,8 @@ struct SonosProvider: TimelineProvider {
                               groupMemberCount: SharedStorage.cachedGroupMemberCount,
                               playbackSource: info.source,
                               dominantColorHex: SharedStorage.cachedDominantColorHex,
-                              audioQualityLabel: audioQualityLabel)
+                              audioQualityLabel: audioQualityLabel,
+                              isLiveStream: isLiveStream)
         } catch {
             return cachedEntry()
         }
@@ -193,15 +201,23 @@ struct SonosWidgetSmallView: View {
                     .lineLimit(1)
 
                 HStack(spacing: 16) {
-                    Button(intent: PreviousTrackIntent()) {
-                        Image(systemName: "backward.fill").font(.caption)
-                    }.buttonStyle(.plain)
-                    Button(intent: PlayPauseIntent()) {
-                        Image(systemName: entry.isPlaying ? "pause.fill" : "play.fill").font(.body)
-                    }.buttonStyle(.plain)
-                    Button(intent: NextTrackIntent()) {
-                        Image(systemName: "forward.fill").font(.caption)
-                    }.buttonStyle(.plain)
+                    if entry.isLiveStream {
+                        Spacer()
+                        Button(intent: PlayPauseIntent()) {
+                            Image(systemName: entry.isPlaying ? "stop.fill" : "play.fill").font(.body)
+                        }.buttonStyle(.plain)
+                        Spacer()
+                    } else {
+                        Button(intent: PreviousTrackIntent()) {
+                            Image(systemName: "backward.fill").font(.caption)
+                        }.buttonStyle(.plain)
+                        Button(intent: PlayPauseIntent()) {
+                            Image(systemName: entry.isPlaying ? "pause.fill" : "play.fill").font(.body)
+                        }.buttonStyle(.plain)
+                        Button(intent: NextTrackIntent()) {
+                            Image(systemName: "forward.fill").font(.caption)
+                        }.buttonStyle(.plain)
+                    }
                 }
                 .foregroundStyle(.white)
             }
@@ -347,16 +363,23 @@ struct SonosWidgetMediumView: View {
 
                         Spacer()
 
-                        Button(intent: PreviousTrackIntent()) {
-                            Image(systemName: "backward.fill").font(.callout)
-                        }.buttonStyle(.plain)
-                        Button(intent: PlayPauseIntent()) {
-                            Image(systemName: entry.isPlaying ? "pause.fill" : "play.fill")
-                                .font(.title3)
-                        }.buttonStyle(.plain)
-                        Button(intent: NextTrackIntent()) {
-                            Image(systemName: "forward.fill").font(.callout)
-                        }.buttonStyle(.plain)
+                        if entry.isLiveStream {
+                            Button(intent: PlayPauseIntent()) {
+                                Image(systemName: entry.isPlaying ? "stop.fill" : "play.fill")
+                                    .font(.title3)
+                            }.buttonStyle(.plain)
+                        } else {
+                            Button(intent: PreviousTrackIntent()) {
+                                Image(systemName: "backward.fill").font(.callout)
+                            }.buttonStyle(.plain)
+                            Button(intent: PlayPauseIntent()) {
+                                Image(systemName: entry.isPlaying ? "pause.fill" : "play.fill")
+                                    .font(.title3)
+                            }.buttonStyle(.plain)
+                            Button(intent: NextTrackIntent()) {
+                                Image(systemName: "forward.fill").font(.callout)
+                            }.buttonStyle(.plain)
+                        }
 
                         Spacer()
 

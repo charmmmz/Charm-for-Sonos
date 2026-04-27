@@ -248,6 +248,17 @@ struct TrackInfo: Codable, Equatable, Sendable {
 
     var durationSeconds: TimeInterval { SonosTime.parse(duration ?? "") }
     var positionSeconds: TimeInterval { SonosTime.parse(position ?? "") }
+
+    /// True when the playing source has no fixed duration — Apple Music 1 /
+    /// TuneIn live broadcasts, internet radio streams, AirPlay / line-in.
+    /// Used by the player UI to swap the seek bar / skip controls for a
+    /// "LIVE" pill + stop button (you can't seek or skip a live stream).
+    /// TV input has its own dedicated panel (`tvFormatPanel`) and is
+    /// excluded so the soundbar branch keeps its existing behavior.
+    var isLiveStream: Bool {
+        if source == .tv { return false }
+        return durationSeconds <= 0
+    }
 }
 
 // MARK: - TV Audio Format
@@ -727,6 +738,16 @@ struct SonosActivityAttributes: ActivityAttributes {
         var playbackSourceRaw: String? = nil
     }
     var speakerName: String
+}
+
+extension SonosActivityAttributes.ContentState {
+    /// Mirror of `TrackInfo.isLiveStream` for Live Activity rendering. We
+    /// recompute from the carried fields rather than adding another
+    /// stored value to keep the ActivityKit payload size unchanged.
+    var isLiveStream: Bool {
+        if playbackSourceRaw == PlaybackSource.tv.rawValue { return false }
+        return durationSeconds <= 0
+    }
 }
 
 // MARK: - Time Helpers
