@@ -6,6 +6,14 @@ final class SonosAuth: NSObject {
 
     static let shared = SonosAuth()
 
+    enum SessionState: String {
+        case disconnected
+        case checking
+        case connected
+        case expired
+    }
+    private static let sessionStateKey = "com.charm.SonosWidget.sessionState"
+
     /// Values come from `Config/SonosOAuth.xcconfig` → merged Info.plist (`SonosOAuth*` keys).
     /// Copy `Config/SonosSecrets.example.xcconfig` to `Config/SonosSecrets.xcconfig` and fill in.
     static var clientID: String { Self.infoPlistString("SonosOAuthClientID") }
@@ -17,7 +25,13 @@ final class SonosAuth: NSObject {
         return raw.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    var isLoggedIn: Bool { readKeychain(.accessToken) != nil }
+    var sessionState: SessionState = .disconnected {
+        didSet { persistSessionState() }
+    }
+    var hasStoredCredentials: Bool {
+        readKeychain(.accessToken) != nil || readKeychain(.refreshToken) != nil
+    }
+    var isLoggedIn: Bool { hasStoredCredentials && sessionState != .expired }
     var householdId: String? {
         get { readKeychain(.householdId) }
         set { if let v = newValue { saveKeychain(.householdId, v) } else { deleteKeychain(.householdId) } }
@@ -30,8 +44,12 @@ final class SonosAuth: NSObject {
     var cachedAccessToken: String? { readKeychain(.accessToken) }
 
     private var presentationAnchor: ASPresentationAnchor?
+    private var authSession: ASWebAuthenticationSession?
 
-    private override init() { super.init() }
+    private override init() {
+        super.init()
+        sessionState = Self.restoredSessionState(hasStoredCredentials: hasStoredCredentials)
+    }
 
     // MARK: - Login
 
@@ -41,6 +59,9 @@ final class SonosAuth: NSObject {
             SonosLog.error(.sonosAuth, "clientID not configured")
             return false
         }
+        SonosLog.info(.sonosAuth, "startLogin")
+        let stateBeforeLogin = sessionState
+        sessionState = .checking
 
         var components = URLComponents(string: "https://api.sonos.com/login/v3/oauth")!
         components.queryItems = [
@@ -51,7 +72,11 @@ final class SonosAuth: NSObject {
             .init(name: "redirect_uri", value: Self.redirectURI),
         ]
 
-        guard let authURL = components.url else { return false }
+        guard let authURL = components.url else {
+            SonosLog.error(.sonosAuth, "could not build authorization URL")
+            restoreStateAfterLoginCancellation(previousState: stateBeforeLogin)
+            return false
+        }
         presentationAnchor = window
 
         return await withCheckedContinuation { continuation in
@@ -59,10 +84,18 @@ final class SonosAuth: NSObject {
                 url: authURL,
                 callbackURLScheme: "sonoswidget"
             ) { [weak self] callbackURL, error in
-                guard let self, let callbackURL, error == nil else {
+                guard let self else {
                     continuation.resume(returning: false)
                     return
                 }
+                self.authSession = nil
+                guard let callbackURL, error == nil else {
+                    SonosLog.info(.sonosAuth, "login cancelled or failed: \(error?.localizedDescription ?? "missing callback URL")")
+                    self.restoreStateAfterLoginCancellation(previousState: stateBeforeLogin)
+                    continuation.resume(returning: false)
+                    return
+                }
+                SonosLog.info(.sonosAuth, "received OAuth callback")
                 Task {
                     let success = await self.handleCallback(url: callbackURL)
                     continuation.resume(returning: success)
@@ -70,14 +103,29 @@ final class SonosAuth: NSObject {
             }
             session.presentationContextProvider = self
             session.prefersEphemeralWebBrowserSession = true
-            session.start()
+            authSession = session
+            guard session.start() else {
+                SonosLog.error(.sonosAuth, "ASWebAuthenticationSession did not start")
+                authSession = nil
+                restoreStateAfterLoginCancellation(previousState: stateBeforeLogin)
+                continuation.resume(returning: false)
+                return
+            }
+            SonosLog.debug(.sonosAuth, "ASWebAuthenticationSession started")
         }
+    }
+
+    @MainActor
+    func reconnect(from window: UIWindow?) async -> Bool {
+        SonosLog.info(.sonosAuth, "reconnect")
+        return await startLogin(from: window)
     }
 
     @discardableResult
     func handleCallback(url: URL) async -> Bool {
         guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
               let code = components.queryItems?.first(where: { $0.name == "code" })?.value else {
+            restoreStateAfterFailedTokenRequest()
             return false
         }
         return await exchangeCodeForToken(code: code)
@@ -93,11 +141,17 @@ final class SonosAuth: NSObject {
             .init(name: "redirect_uri", value: Self.redirectURI),
         ]
 
-        return await tokenRequest(bodyString: body.query ?? "")
+        let success = await tokenRequest(bodyString: body.query ?? "")
+        if !success { restoreStateAfterFailedTokenRequest() }
+        return success
     }
 
     func refreshAccessToken() async -> Bool {
-        guard let refreshToken = readKeychain(.refreshToken) else { return false }
+        guard let refreshToken = readKeychain(.refreshToken) else {
+            markSessionExpired()
+            return false
+        }
+        sessionState = .checking
 
         var body = URLComponents()
         body.queryItems = [
@@ -105,7 +159,9 @@ final class SonosAuth: NSObject {
             .init(name: "refresh_token", value: refreshToken),
         ]
 
-        return await tokenRequest(bodyString: body.query ?? "")
+        let success = await tokenRequest(bodyString: body.query ?? "")
+        if !success { markSessionExpired() }
+        return success
     }
 
     private func tokenRequest(bodyString: String) async -> Bool {
@@ -122,7 +178,12 @@ final class SonosAuth: NSObject {
 
         do {
             let (data, response) = try await noProxySession.data(for: request)
-            guard let http = response as? HTTPURLResponse, http.statusCode == 200 else { return false }
+            guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+                let status = (response as? HTTPURLResponse)?.statusCode ?? -1
+                let body = String(data: data, encoding: .utf8) ?? ""
+                SonosLog.error(.sonosAuth, "token request HTTP \(status): \(body.prefix(500))")
+                return false
+            }
 
             let json = try JSONDecoder().decode(TokenResponse.self, from: data)
             saveKeychain(.accessToken, json.access_token)
@@ -132,6 +193,8 @@ final class SonosAuth: NSObject {
             // Mirror token to SharedStorage so widget extension can access it.
             SharedStorage.cloudAccessToken = json.access_token
             SharedStorage.cloudTokenExpiry = expiry
+            sessionState = .connected
+            SonosLog.info(.sonosAuth, "token request succeeded; expires in \(json.expires_in)s")
             return true
         } catch {
             SonosLog.error(.sonosAuth, "token request failed: \(error)")
@@ -142,7 +205,12 @@ final class SonosAuth: NSObject {
     // MARK: - Access Token (auto-refresh)
 
     func validAccessToken() async -> String? {
-        guard let token = readKeychain(.accessToken) else { return nil }
+        if sessionState == .expired { return nil }
+
+        guard let token = readKeychain(.accessToken) else {
+            sessionState = .disconnected
+            return nil
+        }
 
         if let expiryStr = readKeychain(.tokenExpiry),
            let expiry = Double(expiryStr),
@@ -150,6 +218,7 @@ final class SonosAuth: NSObject {
             // Mirror to SharedStorage every time so the widget extension always has a fresh copy.
             SharedStorage.cloudAccessToken = token
             SharedStorage.cloudTokenExpiry = Date(timeIntervalSince1970: expiry)
+            sessionState = .connected
             return token
         }
 
@@ -161,6 +230,44 @@ final class SonosAuth: NSObject {
 
     func logout() {
         for key in KeychainKey.allCases { deleteKeychain(key) }
+        SharedStorage.cloudAccessToken = nil
+        SharedStorage.cloudTokenExpiry = .distantPast
+        sessionState = .disconnected
+    }
+
+    func markSessionExpired() {
+        guard hasStoredCredentials else {
+            sessionState = .disconnected
+            return
+        }
+        SharedStorage.cloudAccessToken = nil
+        SharedStorage.cloudTokenExpiry = .distantPast
+        sessionState = .expired
+    }
+
+    private func restoreStateAfterLoginCancellation(previousState: SessionState) {
+        guard hasStoredCredentials else {
+            sessionState = .disconnected
+            return
+        }
+        sessionState = previousState == .checking ? .connected : previousState
+    }
+
+    private func restoreStateAfterFailedTokenRequest() {
+        sessionState = hasStoredCredentials ? .expired : .disconnected
+    }
+
+    private static func restoredSessionState(hasStoredCredentials: Bool) -> SessionState {
+        guard hasStoredCredentials else { return .disconnected }
+        guard let raw = UserDefaults.standard.string(forKey: sessionStateKey),
+              let state = SessionState(rawValue: raw) else {
+            return .connected
+        }
+        return state == .checking ? .connected : state
+    }
+
+    private func persistSessionState() {
+        UserDefaults.standard.set(sessionState.rawValue, forKey: Self.sessionStateKey)
     }
 
     // MARK: - Keychain

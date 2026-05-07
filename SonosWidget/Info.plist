@@ -13,6 +13,12 @@
 			<string>com.charm.SonosWidget.oauth</string>
 		</dict>
 	</array>
+	<key>SonosOAuthClientID</key>
+	<string>$(SONOS_OAUTH_CLIENT_ID)</string>
+	<key>SonosOAuthClientSecret</key>
+	<string>$(SONOS_OAUTH_CLIENT_SECRET)</string>
+	<key>SonosOAuthRedirectURI</key>
+	<string>$(SONOS_OAUTH_REDIRECT_URI)</string>
 	<key>BGTaskSchedulerPermittedIdentifiers</key>
 	<array>
 		<string>com.charm.SonosWidget.refresh</string>
