@@ -17,6 +17,8 @@ struct SettingsView: View {
     /// observable changes and re-renders the status row.
     @Bindable private var relay = RelayManager.shared
 
+    @Bindable private var auth = SonosAuth.shared
+
     var body: some View {
         NavigationStack {
             Form {
@@ -62,7 +64,8 @@ struct SettingsView: View {
     @ViewBuilder
     private var sonosAccountSection: some View {
         Section {
-            if SonosAuth.shared.isLoggedIn {
+            switch auth.sessionState {
+            case .connected:
                 HStack(spacing: 12) {
                     Image(systemName: "checkmark.circle.fill")
                         .font(.title3)
@@ -82,20 +85,43 @@ struct SettingsView: View {
                     .controlSize(.small)
                     .tint(.red)
                 }
-            } else {
-                Button {
-                    connectSonos()
-                } label: {
-                    HStack {
-                        Label("Connect Sonos Account",
-                              systemImage: "person.crop.circle.badge.plus")
-                        Spacer()
-                        if isConnectingSonos {
-                            ProgressView().controlSize(.small)
-                        }
+
+            case .expired:
+                HStack(spacing: 12) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.title3)
+                        .foregroundStyle(.orange)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Session Expired")
+                            .font(.subheadline.weight(.semibold))
+                        Text("Reconnect your Sonos account")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
+                    Spacer()
+                    Button("Reconnect") {
+                        connectSonos(reconnect: true)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .disabled(isConnectingSonos)
                 }
-                .disabled(isConnectingSonos)
+
+            case .checking:
+                HStack(spacing: 12) {
+                    ProgressView().controlSize(.small)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Checking")
+                            .font(.subheadline.weight(.semibold))
+                        Text("Refreshing Sonos Cloud session")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                }
+
+            case .disconnected:
+                connectSonosButton
             }
         } header: {
             Text("Sonos Account")
@@ -104,16 +130,37 @@ struct SettingsView: View {
         }
     }
 
-    private func connectSonos() {
+    private var connectSonosButton: some View {
+        Button {
+            connectSonos()
+        } label: {
+            HStack {
+                Label("Connect Sonos Account",
+                      systemImage: "person.crop.circle.badge.plus")
+                Spacer()
+                if isConnectingSonos {
+                    ProgressView().controlSize(.small)
+                }
+            }
+        }
+        .disabled(isConnectingSonos)
+    }
+
+    private func connectSonos(reconnect: Bool = false) {
         isConnectingSonos = true
         Task {
             let window = UIApplication.shared.connectedScenes
                 .compactMap { $0 as? UIWindowScene }
                 .first?.windows.first
-            await SonosAuth.shared.startLogin(from: window)
-            if SonosAuth.shared.isLoggedIn {
+            let success = if reconnect {
+                await auth.reconnect(from: window)
+            } else {
+                await auth.startLogin(from: window)
+            }
+            if success {
                 await manager.resolveCloudGroupId()
                 await manager.refreshState()
+                await searchManager.forceReprobe()
             }
             isConnectingSonos = false
         }

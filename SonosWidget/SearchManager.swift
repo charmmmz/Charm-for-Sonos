@@ -155,7 +155,7 @@ final class SearchManager {
         }
 
         do {
-            let accounts = try await SonosCloudAPI.getMusicServiceAccounts(
+            let accounts = try await musicServiceAccountsWithTokenRefresh(
                 token: token, householdId: householdId)
             linkedAccounts = accounts
             persistAccounts(accounts)
@@ -171,6 +171,7 @@ final class SearchManager {
             }
         } catch {
             SonosLog.error(.search, "Cloud API detection failed: \(error)")
+            errorMessage = error.localizedDescription
         }
 
         await ensureMusicServicesPopulated()
@@ -767,10 +768,11 @@ final class SearchManager {
             // error is why off-LAN users see a blank Browse tab with
             // zero diagnostic breadcrumbs.
             do {
-                favorites = try await cloudFavoritesAsBrowseItems(context: ctx)
+                favorites = try await cloudFavoritesWithTokenRefresh(context: ctx)
                 SonosLog.info(.favorites, "Cloud favorites: \(favorites.count) loaded")
             } catch {
                 SonosLog.error(.favorites, "Cloud favorites load failed: \(error)")
+                errorMessage = error.localizedDescription
                 favorites = []
             }
             playlists = []
@@ -866,6 +868,79 @@ final class SearchManager {
         (try? await block()) ?? []
     }
 
+    private func refreshCloudTokenForRetry() async throws -> String {
+        guard await SonosAuth.shared.refreshAccessToken(),
+              let token = await SonosAuth.shared.validAccessToken() else {
+            SonosAuth.shared.markSessionExpired()
+            throw SonosCloudError.unauthorized
+        }
+        return token
+    }
+
+    private func musicServiceAccountsWithTokenRefresh(
+        token: String,
+        householdId: String
+    ) async throws -> [SonosCloudAPI.CloudMusicServiceAccount] {
+        do {
+            return try await SonosCloudAPI.getMusicServiceAccounts(
+                token: token, householdId: householdId)
+        } catch SonosCloudError.unauthorized {
+            let refreshed = try await refreshCloudTokenForRetry()
+            return try await SonosCloudAPI.getMusicServiceAccounts(
+                token: refreshed, householdId: householdId)
+        }
+    }
+
+    private func cloudFavoritesWithTokenRefresh(context: CloudContext) async throws -> [BrowseItem] {
+        do {
+            return try await cloudFavoritesAsBrowseItems(context: context)
+        } catch SonosCloudError.unauthorized {
+            let refreshed = try await refreshCloudTokenForRetry()
+            let refreshedContext = CloudContext(
+                token: refreshed,
+                householdId: context.householdId,
+                groupId: context.groupId)
+            return try await cloudFavoritesAsBrowseItems(context: refreshedContext)
+        }
+    }
+
+    private func searchCatalogWithTokenRefresh(
+        token: String,
+        householdId: String,
+        term: String,
+        serviceIds: [String]
+    ) async throws -> SonosCloudAPI.CloudSearchResponse {
+        do {
+            return try await SonosCloudAPI.searchCatalog(
+                token: token, householdId: householdId,
+                term: term, serviceIds: serviceIds)
+        } catch SonosCloudError.unauthorized {
+            let refreshed = try await refreshCloudTokenForRetry()
+            return try await SonosCloudAPI.searchCatalog(
+                token: refreshed, householdId: householdId,
+                term: term, serviceIds: serviceIds)
+        }
+    }
+
+    private func searchServiceWithTokenRefresh(
+        token: String,
+        householdId: String,
+        serviceId: String,
+        accountId: String,
+        term: String
+    ) async throws -> SonosCloudAPI.ServiceSearchResponse {
+        do {
+            return try await SonosCloudAPI.searchService(
+                token: token, householdId: householdId,
+                serviceId: serviceId, accountId: accountId, term: term)
+        } catch SonosCloudError.unauthorized {
+            let refreshed = try await refreshCloudTokenForRetry()
+            return try await SonosCloudAPI.searchService(
+                token: refreshed, householdId: householdId,
+                serviceId: serviceId, accountId: accountId, term: term)
+        }
+    }
+
     // MARK: - Search via Cloud API
 
     func search(query: String) {
@@ -874,11 +949,13 @@ final class SearchManager {
             searchResults = []
             isSearching = false
             hasSearched = false
+            errorMessage = nil
             return
         }
 
         hasSearched = true
         isSearching = true
+        errorMessage = nil
         searchTask = Task {
             try? await Task.sleep(for: .milliseconds(400))
             guard !Task.isCancelled else { return }
@@ -905,6 +982,7 @@ final class SearchManager {
             guard let token = await SonosAuth.shared.validAccessToken(),
                   let householdId = SonosAuth.shared.householdId else {
                 SonosLog.info(.search, "No Cloud auth for search")
+                errorMessage = SonosCloudError.unauthorized.localizedDescription
                 searchResults = []
                 isSearching = false
                 return
@@ -914,7 +992,7 @@ final class SearchManager {
             serviceDetailResults = [:]
 
             do {
-                let response = try await SonosCloudAPI.searchCatalog(
+                let response = try await searchCatalogWithTokenRefresh(
                     token: token, householdId: householdId,
                     term: query, serviceIds: serviceIds)
 
@@ -944,10 +1022,12 @@ final class SearchManager {
                 SonosLog.debug(.search, "search '\(query)' across \(serviceIds.count) services → \(total) results in \(results.count) groups")
 
                 guard !Task.isCancelled else { return }
+                errorMessage = nil
                 searchResults = results
             } catch {
                 if !Task.isCancelled {
                     SonosLog.error(.search, "Cloud search failed: \(error)")
+                    errorMessage = error.localizedDescription
                     searchResults = []
                 }
             }
@@ -972,7 +1052,7 @@ final class SearchManager {
         defer { isLoadingServiceDetail = false }
 
         do {
-            let response = try await SonosCloudAPI.searchService(
+            let response = try await searchServiceWithTokenRefresh(
                 token: token, householdId: householdId,
                 serviceId: serviceId, accountId: aid, term: lastSearchQuery)
 
@@ -985,8 +1065,10 @@ final class SearchManager {
 
             serviceDetailResults[serviceId] = ServiceSearchResult(
                 id: serviceId, serviceName: serviceName, items: items)
+            errorMessage = nil
         } catch {
             SonosLog.error(.search, "Detail search failed for \(serviceId): \(error)")
+            errorMessage = error.localizedDescription
         }
     }
 

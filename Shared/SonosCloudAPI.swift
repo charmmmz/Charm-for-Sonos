@@ -159,6 +159,7 @@ enum SonosCloudAPI {
             // of harmless JSON on every launch which buried more useful logs.
             let body = String(data: data, encoding: .utf8) ?? ""
             SonosLog.error(.cloudAPI, "integrations/registrations HTTP \(status): \(body.prefix(500))")
+            if status == 401 { throw SonosCloudError.unauthorized }
             throw SonosCloudError.httpError(status)
         }
 

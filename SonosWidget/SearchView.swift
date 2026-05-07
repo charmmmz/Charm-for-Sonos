@@ -9,6 +9,8 @@ struct SearchView: View {
     @State private var selectedServiceTab: String?
     /// Tracks which item is currently being loaded for playback
     @State private var playingItemId: String?
+    @State private var isReconnectingSonos = false
+    @Bindable private var auth = SonosAuth.shared
 
     var body: some View {
         NavigationStack {
@@ -111,6 +113,57 @@ struct SearchView: View {
         }
     }
 
+    private var sonosCloudErrorContent: some View {
+        VStack(spacing: 16) {
+            ContentUnavailableView(
+                "Sonos Cloud",
+                systemImage: "exclamationmark.triangle",
+                description: Text(searchManager.errorMessage ?? "")
+            )
+            if auth.sessionState == .expired || auth.sessionState == .disconnected {
+                Button {
+                    reconnectSonos()
+                } label: {
+                    HStack(spacing: 8) {
+                        if isReconnectingSonos {
+                            ProgressView().controlSize(.small)
+                        }
+                        Text(isReconnectingSonos ? "Reconnecting..." : sonosCloudConnectTitle)
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(isReconnectingSonos)
+            }
+        }
+        .padding(.horizontal)
+    }
+
+    private var sonosCloudConnectTitle: String {
+        auth.sessionState == .expired ? "Reconnect" : "Connect"
+    }
+
+    private func reconnectSonos() {
+        isReconnectingSonos = true
+        Task {
+            let window = UIApplication.shared.connectedScenes
+                .compactMap { $0 as? UIWindowScene }
+                .first?.windows.first
+            let success = await auth.reconnect(from: window)
+            if success {
+                searchManager.errorMessage = nil
+                await manager.resolveCloudGroupId()
+                await manager.refreshState()
+                await searchManager.forceReprobe()
+                if searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    await loadBrowseForCurrentBackend()
+                } else {
+                    searchManager.search(query: searchText)
+                }
+            }
+            isReconnectingSonos = false
+        }
+    }
+
     /// Dispatches Browse-tab content loading based on whether we're LAN or
     /// remote. In remote mode we hand SearchManager a cloud context so it can
     /// source Sonos Favorites from the Control API's `listFavorites` endpoint.
@@ -124,7 +177,10 @@ struct SearchView: View {
         switch manager.transportBackend {
         case .cloud:
             guard let token = await SonosAuth.shared.validAccessToken(),
-                  let householdId = SonosAuth.shared.householdId else { return }
+                  let householdId = SonosAuth.shared.householdId else {
+                searchManager.errorMessage = SonosCloudError.unauthorized.localizedDescription
+                return
+            }
             // Group id usually resolves shortly after the backend flips —
             // kick a resolve if we don't have it yet so the Browse tab
             // doesn't sit empty waiting for the next poll.
@@ -189,7 +245,10 @@ struct SearchView: View {
                         browseSection(title: "Radio Stations", items: searchManager.radio, horizontal: true)
                     }
 
-                    if searchManager.favorites.isEmpty && searchManager.playlists.isEmpty && searchManager.radio.isEmpty {
+                    if searchManager.errorMessage?.isEmpty == false {
+                        sonosCloudErrorContent
+                            .padding(.top, 20)
+                    } else if searchManager.favorites.isEmpty && searchManager.playlists.isEmpty && searchManager.radio.isEmpty {
                         ContentUnavailableView("No Content",
                                                systemImage: "music.note.list",
                                                description: Text("Add favorites, playlists, or radio stations in the Sonos app."))
@@ -673,6 +732,8 @@ struct SearchView: View {
                     ProgressView("Searching…")
                     Spacer()
                 }
+            } else if searchManager.errorMessage?.isEmpty == false {
+                sonosCloudErrorContent
             } else if searchManager.hasSearched && searchManager.searchResults.isEmpty {
                 ContentUnavailableView.search(text: searchText)
             } else if searchManager.searchResults.isEmpty {
@@ -1562,4 +1623,3 @@ struct FavoriteCategoryDetailView: View {
         }
     }
 }
-
