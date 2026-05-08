@@ -617,7 +617,7 @@ struct QueueResult: Sendable {
 
 // MARK: - Browse / Search
 
-struct BrowseItem: Identifiable, Codable, Sendable {
+struct BrowseItem: Identifiable, Codable, Equatable, Sendable {
     var id: String
     var title: String
     var artist: String
@@ -625,6 +625,9 @@ struct BrowseItem: Identifiable, Codable, Sendable {
     var albumArtURL: String?
     var uri: String?
     var metaXML: String?
+    /// Track duration in seconds when known. Search-result based items use this
+    /// for Apple Music handoff matching; legacy/local browse items default to 0.
+    var duration: TimeInterval = 0
     /// Resource metadata from Sonos Favorites (`r:resMD`), decoded DIDL-Lite.
     var resMD: String?
     var isContainer: Bool
