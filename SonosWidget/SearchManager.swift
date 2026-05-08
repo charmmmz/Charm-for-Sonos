@@ -1544,16 +1544,21 @@ final class SearchManager {
               let householdId = SonosAuth.shared.householdId else {
             throw ReverseHandoffError.sonosCloudDisconnected
         }
+        try ensureReverseHandoffTargetStillSelected(selectedSpeaker, manager: manager)
 
         guard let backend = await manager.controlBackendEnsured() else {
             throw ReverseHandoffError.noBackend
         }
+        try ensureReverseHandoffTargetStillSelected(selectedSpeaker, manager: manager)
 
         if !hasProbed {
             await probeLinkedServices()
+            try ensureReverseHandoffTargetStillSelected(selectedSpeaker, manager: manager)
         }
         await refreshServiceIdMappingIfNeeded()
+        try ensureReverseHandoffTargetStillSelected(selectedSpeaker, manager: manager)
         await manager.refreshState()
+        try ensureReverseHandoffTargetStillSelected(selectedSpeaker, manager: manager)
 
         guard let trackInfo = manager.trackInfo else {
             throw ReverseHandoffError.missingSonosTrackMetadata
@@ -1609,6 +1614,15 @@ final class SearchManager {
         }
     }
 
+    private func ensureReverseHandoffTargetStillSelected(
+        _ selectedSpeaker: SonosPlayer,
+        manager: SonosManager
+    ) throws {
+        guard manager.selectedSpeaker?.id == selectedSpeaker.id else {
+            throw ReverseHandoffError.noSelectedSpeaker
+        }
+    }
+
     private func reverseSourceTrack(from trackInfo: TrackInfo) throws -> AppleMusicHandoffTrack {
         let title = trackInfo.title.trimmingCharacters(in: .whitespacesAndNewlines)
         let artist = trackInfo.artist.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1623,8 +1637,22 @@ final class SearchManager {
             album: album.isEmpty ? nil : album,
             duration: trackInfo.durationSeconds > 0 ? trackInfo.durationSeconds : nil,
             position: max(0, trackInfo.positionSeconds),
-            playbackStoreID: SonosAppleMusicTrackResolver.storeID(fromTrackURI: trackInfo.trackURI),
+            playbackStoreID: directAppleMusicStoreID(from: trackInfo.trackURI),
             persistentID: nil)
+    }
+
+    private func directAppleMusicStoreID(from trackURI: String?) -> String? {
+        guard let objectID = SonosAppleMusicTrackResolver
+            .trackObjectIDForNowPlaying(fromTrackURI: trackURI) else {
+            return nil
+        }
+
+        let lowercasedObjectID = objectID.lowercased()
+        let knownPrefixes = ["10032020", "10032064", "1003206c"]
+        guard knownPrefixes.contains(where: { lowercasedObjectID.hasPrefix($0) }) else {
+            return nil
+        }
+        return SonosAppleMusicTrackResolver.storeID(fromObjectID: objectID)
     }
 
     private func isAppleMusicTrack(_ trackInfo: TrackInfo) -> Bool {
@@ -1640,6 +1668,30 @@ final class SearchManager {
             return false
         }
         return isAppleMusicAccount(account)
+    }
+
+    private func sourceAppleMusicAccount(
+        from trackInfo: TrackInfo
+    ) -> SonosCloudAPI.CloudMusicServiceAccount? {
+        guard let trackURI = trackInfo.trackURI else { return nil }
+        let parsed = SonosAppleMusicTrackResolver.parseTrackURI(trackURI)
+        guard let localServiceID = parsed.localServiceID,
+              let cloudServiceID = cloudServiceId(forLocalSid: localServiceID) else {
+            return nil
+        }
+
+        if let accountID = parsed.accountID,
+           let exactAccount = linkedAccounts.first(where: {
+               $0.serviceId == cloudServiceID &&
+               $0.accountId == accountID &&
+               isAppleMusicAccount($0)
+           }) {
+            return exactAccount
+        }
+
+        return linkedAccounts.first {
+            $0.serviceId == cloudServiceID && isAppleMusicAccount($0)
+        }
     }
 
     private func resolveAppleMusicStoreID(
@@ -1662,7 +1714,8 @@ final class SearchManager {
         return try await searchMatchedStoreID(
             for: track,
             token: token,
-            householdId: householdId)
+            householdId: householdId,
+            preferredAccount: sourceAppleMusicAccount(from: trackInfo))
     }
 
     private func nowPlayingStoreID(
@@ -1698,9 +1751,11 @@ final class SearchManager {
     private func searchMatchedStoreID(
         for track: AppleMusicHandoffTrack,
         token: String,
-        householdId: String
+        householdId: String,
+        preferredAccount: SonosCloudAPI.CloudMusicServiceAccount?
     ) async throws -> String {
-        guard let appleMusicAccount = linkedAccounts.first(where: { isAppleMusicAccount($0) }),
+        let account = preferredAccount ?? linkedAccounts.first(where: { isAppleMusicAccount($0) })
+        guard let appleMusicAccount = account,
               let serviceId = appleMusicAccount.serviceId,
               let accountId = appleMusicAccount.accountId else {
             throw ReverseHandoffError.appleMusicNotLinkedOnSonos
