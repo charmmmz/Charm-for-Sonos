@@ -99,6 +99,64 @@ final class HandoffMatcherTests: XCTestCase {
         XCTAssertNil(match)
     }
 
+    func testShortTitleDoesNotMatchInsideLongerWord() {
+        let source = AppleMusicHandoffTrack(
+            title: "Intro",
+            artist: "The xx",
+            album: "xx",
+            duration: 127,
+            position: 4,
+            playbackStoreID: nil,
+            persistentID: nil
+        )
+        let candidates = [
+            makeItem(title: "Introvert", artist: "The xx", album: "xx", duration: 127)
+        ]
+
+        let match = HandoffMatcher.bestMatch(for: source, candidates: candidates)
+
+        XCTAssertNil(match)
+    }
+
+    func testExactTitleOutranksPartialTitleWithMoreMetadata() {
+        let source = AppleMusicHandoffTrack(
+            title: "Intro",
+            artist: "The xx",
+            album: "xx",
+            duration: 127,
+            position: 4,
+            playbackStoreID: nil,
+            persistentID: nil
+        )
+        let exactTitle = makeItem(title: "Intro", artist: "The xx", album: "", duration: 0)
+        let partialTitle = makeItem(title: "Intro - Live", artist: "The xx", album: "xx", duration: 127)
+
+        let match = HandoffMatcher.bestMatch(for: source, candidates: [partialTitle, exactTitle])
+
+        XCTAssertEqual(match?.item.title, "Intro")
+    }
+
+    func testBrowseItemDecodesMissingDurationAsZero() throws {
+        let json = """
+        {
+          "id": "track-1",
+          "title": "Intro",
+          "artist": "The xx",
+          "album": "xx",
+          "albumArtURL": null,
+          "uri": "x-sonos-http:test.mp4?sid=204&flags=8232&sn=1",
+          "metaXML": null,
+          "isContainer": false,
+          "serviceId": 204,
+          "cloudType": "TRACK"
+        }
+        """
+
+        let item = try JSONDecoder().decode(BrowseItem.self, from: Data(json.utf8))
+
+        XCTAssertEqual(item.duration, 0)
+    }
+
     private func makeItem(title: String, artist: String, album: String, duration: TimeInterval) -> BrowseItem {
         BrowseItem(
             id: UUID().uuidString,

@@ -1,7 +1,4 @@
 import Foundation
-#if SONOSWIDGET_TEST_TARGET
-@testable import SonosWidget
-#endif
 
 enum HandoffMatcher {
     struct Match: Equatable {
@@ -22,6 +19,9 @@ enum HandoffMatcher {
                 return Match(item: candidate, score: score)
             }
             .sorted { lhs, rhs in
+                let lhsExactTitle = isExactTitleMatch(source: source, candidate: lhs.item)
+                let rhsExactTitle = isExactTitleMatch(source: source, candidate: rhs.item)
+                if lhsExactTitle != rhsExactTitle { return lhsExactTitle }
                 if lhs.score != rhs.score { return lhs.score > rhs.score }
                 return lhs.item.title.count < rhs.item.title.count
             }
@@ -87,6 +87,15 @@ enum HandoffMatcher {
 
     private static func titleMatches(_ lhs: String, _ rhs: String) -> Bool {
         guard !lhs.isEmpty, !rhs.isEmpty else { return false }
-        return lhs == rhs || lhs.contains(rhs) || rhs.contains(lhs)
+        return lhs == rhs || isWholePhrase(lhs, within: rhs) || isWholePhrase(rhs, within: lhs)
+    }
+
+    private static func isExactTitleMatch(source: AppleMusicHandoffTrack, candidate: BrowseItem) -> Bool {
+        normalized(source.title) == normalized(candidate.title)
+    }
+
+    private static func isWholePhrase(_ phrase: String, within value: String) -> Bool {
+        guard !phrase.isEmpty, phrase != value else { return false }
+        return value.hasPrefix("\(phrase) ") || value.hasSuffix(" \(phrase)") || value.contains(" \(phrase) ")
     }
 }

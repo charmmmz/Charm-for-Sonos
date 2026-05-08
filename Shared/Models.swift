@@ -639,6 +639,69 @@ struct BrowseItem: Identifiable, Codable, Equatable, Sendable {
     /// `loadFavorite` instead of UPnP when the app is in remote mode.
     var cloudFavoriteId: String?
 
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case title
+        case artist
+        case album
+        case albumArtURL
+        case uri
+        case metaXML
+        case duration
+        case resMD
+        case isContainer
+        case serviceId
+        case cloudType
+        case cloudFavoriteId
+    }
+
+    init(
+        id: String,
+        title: String,
+        artist: String,
+        album: String,
+        albumArtURL: String? = nil,
+        uri: String? = nil,
+        metaXML: String? = nil,
+        duration: TimeInterval = 0,
+        resMD: String? = nil,
+        isContainer: Bool,
+        serviceId: Int? = nil,
+        cloudType: String? = nil,
+        cloudFavoriteId: String? = nil
+    ) {
+        self.id = id
+        self.title = title
+        self.artist = artist
+        self.album = album
+        self.albumArtURL = albumArtURL
+        self.uri = uri
+        self.metaXML = metaXML
+        self.duration = duration
+        self.resMD = resMD
+        self.isContainer = isContainer
+        self.serviceId = serviceId
+        self.cloudType = cloudType
+        self.cloudFavoriteId = cloudFavoriteId
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        title = try container.decode(String.self, forKey: .title)
+        artist = try container.decode(String.self, forKey: .artist)
+        album = try container.decode(String.self, forKey: .album)
+        albumArtURL = try container.decodeIfPresent(String.self, forKey: .albumArtURL)
+        uri = try container.decodeIfPresent(String.self, forKey: .uri)
+        metaXML = try container.decodeIfPresent(String.self, forKey: .metaXML)
+        duration = try container.decodeIfPresent(TimeInterval.self, forKey: .duration) ?? 0
+        resMD = try container.decodeIfPresent(String.self, forKey: .resMD)
+        isContainer = try container.decode(Bool.self, forKey: .isContainer)
+        serviceId = try container.decodeIfPresent(Int.self, forKey: .serviceId)
+        cloudType = try container.decodeIfPresent(String.self, forKey: .cloudType)
+        cloudFavoriteId = try container.decodeIfPresent(String.self, forKey: .cloudFavoriteId)
+    }
+
     var isArtist: Bool {
         if cloudType == "ARTIST" { return true }
         if let resMD, resMD.contains("musicArtist") { return true }

@@ -25,7 +25,7 @@
   - Unit tests for exact, punctuation, remaster, wrong-artist, and duration mismatch cases.
 - Modify `SonosWidget.xcodeproj/project.pbxproj`
   - Add `AppleMusicHandoff.swift` and `HandoffMatcher.swift` to the `SonosWidget` app target compile sources.
-  - Add `HandoffMatcher.swift` and `HandoffMatcherTests.swift` to the `SonosWidgetTests` target compile sources.
+  - Add `HandoffMatcherTests.swift` to the `SonosWidgetTests` target compile sources. Keep `HandoffMatcher.swift` only in the app target so tests exercise the app module symbol through `@testable import SonosWidget` instead of compiling a duplicate matcher implementation.
   - Add a `SonosWidgetTests` XCTest target if the project still has no test target.
 - Modify `SonosWidget/Info.plist`
   - Add `NSAppleMusicUsageDescription`.
@@ -439,7 +439,7 @@ enum HandoffMatcher {
 
 - [ ] **Step 5: Add the matcher file to the project**
 
-Add `Shared/HandoffMatcher.swift` to the app target and the test target. Mirror how other `Shared/*.swift` files are referenced in `SonosWidget.xcodeproj/project.pbxproj`.
+Add `Shared/HandoffMatcher.swift` to the app target only. Exclude it from the `SonosWidgetTests` target synchronized `Shared` group so `HandoffMatcherTests` imports and tests the app module's `HandoffMatcher` via `@testable import SonosWidget`, avoiding a second compiled matcher copy that could diverge from production behavior.
 
 - [ ] **Step 6: Run matcher tests and verify they pass**
 
