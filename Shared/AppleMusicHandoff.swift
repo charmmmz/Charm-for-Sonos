@@ -15,6 +15,8 @@ enum AppleMusicHandoffError: LocalizedError, Equatable {
     case mediaAccessDenied
     case notPlayingAppleMusic
     case missingTrackMetadata
+    case missingPlaybackStoreID
+    case phonePlaybackFailed
 
     var errorDescription: String? {
         switch self {
@@ -24,6 +26,10 @@ enum AppleMusicHandoffError: LocalizedError, Equatable {
             return "Nothing is currently playing in Apple Music."
         case .missingTrackMetadata:
             return "The current Apple Music track could not be identified."
+        case .missingPlaybackStoreID:
+            return "The Apple Music track could not be opened on this iPhone."
+        case .phonePlaybackFailed:
+            return "Apple Music did not start playback on this iPhone."
         }
     }
 }
@@ -68,8 +74,45 @@ final class AppleMusicHandoffManager {
         )
     }
 
+    func playAppleMusicTrack(storeID: String, position: TimeInterval?) async throws {
+        let status = await mediaLibraryAuthorizationStatus()
+        guard status == .authorized else {
+            throw AppleMusicHandoffError.mediaAccessDenied
+        }
+
+        let trimmedStoreID = storeID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedStoreID.isEmpty else {
+            throw AppleMusicHandoffError.missingPlaybackStoreID
+        }
+
+        player.setQueue(with: [trimmedStoreID])
+        try await prepareToPlay()
+        player.play()
+
+        if let position, position > 3 {
+            player.currentPlaybackTime = max(0, position)
+        }
+
+        try? await Task.sleep(for: .milliseconds(700))
+        guard player.playbackState == .playing || player.nowPlayingItem != nil else {
+            throw AppleMusicHandoffError.phonePlaybackFailed
+        }
+    }
+
     func pausePhonePlayback() {
         player.pause()
+    }
+
+    private func prepareToPlay() async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            player.prepareToPlay { error in
+                if let error {
+                    continuation.resume(throwing: error)
+                } else {
+                    continuation.resume()
+                }
+            }
+        }
     }
 
     private func mediaLibraryAuthorizationStatus() async -> MPMediaLibraryAuthorizationStatus {
