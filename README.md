@@ -1,4 +1,4 @@
-# SonosWidget
+# Charm for Sonos
 
 > A personal iOS control surface for Sonos: Dynamic Island, Live Activities, Home Screen widgets, Apple Music HANDOFF, and optional NAS-backed updates.
 
@@ -7,11 +7,11 @@
 [![Sonos LAN + Cloud](https://img.shields.io/badge/Sonos-LAN%20%2B%20Cloud-000000?style=flat-square)](#architecture)
 [![NAS Relay](https://img.shields.io/badge/NAS%20Relay-Optional-3A7D44?style=flat-square)](#optional-live-activity-relay-nas--home-server)
 
-SonosWidget fills a very specific gap: the official Sonos app is great for setup, but it does not expose Sonos playback as deeply into iOS system surfaces. This app brings Sonos controls closer to where music already lives on an iPhone.
+Charm for Sonos fills a very specific gap: the official Sonos app is great for setup, but it does not expose Sonos playback as deeply into iOS system surfaces. The iOS app is named Charm Player, and it brings Sonos controls closer to where music already lives on an iPhone.
 
 ## At A Glance
 
-| Area | What SonosWidget adds |
+| Area | What Charm for Sonos adds |
 | --- | --- |
 | iOS surfaces | Dynamic Island, Live Activity, Lock Screen controls, and Home Screen widgets |
 | Playback | Play/pause, skip, shuffle, repeat, volume, seek, queue edits, and speaker grouping |
