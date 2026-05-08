@@ -49,9 +49,8 @@ enum SonosAppleMusicTrackResolver {
         parseTrackURI(uri).sonosTrackObjectID
     }
 
-    static func storeID(fromBrowseItem item: Any) -> String? {
-        let browseFields = browseItemFields(from: item)
-        return storeID(fromObjectID: browseFields.id) ?? storeID(fromTrackURI: browseFields.uri)
+    static func storeID(fromBrowseItem item: BrowseItem) -> String? {
+        storeID(fromObjectID: item.id) ?? storeID(fromTrackURI: item.uri)
     }
 
     static func storeID(fromObjectID rawObjectID: String?) -> String? {
@@ -106,22 +105,6 @@ enum SonosAppleMusicTrackResolver {
             params[key] = value
         }
         return params
-    }
-
-    private static func browseItemFields(from item: Any) -> (id: String?, uri: String?) {
-        var id: String?
-        var uri: String?
-        for child in Mirror(reflecting: item).children {
-            switch child.label {
-            case "id":
-                id = child.value as? String
-            case "uri":
-                uri = child.value as? String
-            default:
-                continue
-            }
-        }
-        return (id, uri)
     }
 
     private static func sanitized(_ value: String?) -> String? {

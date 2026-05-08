@@ -86,6 +86,7 @@
 				SharedStorage.swift,
 				SonosAPI.swift,
 				SonosAuth.swift,
+				SonosAppleMusicTrackResolver.swift,
 				SonosCloudAPI.swift,
 				SonosControl.swift,
 				SonosLog.swift,
