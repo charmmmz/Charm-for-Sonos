@@ -53,6 +53,13 @@
 			);
 			target = BA832D612F90D2A80023DEE7 /* TheWidgetExtension */;
 		};
+		BA832D962F92D0000023DEE7 /* Exceptions for "Shared" folder in "TheWidgetExtension" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				AppleMusicHandoff.swift,
+			);
+			target = BA832D612F90D2A80023DEE7 /* TheWidgetExtension */;
+		};
 		BA832D7E2F90D3000023DEE7 /* Exceptions for "SonosWidget" folder in "SonosWidget" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
@@ -81,6 +88,9 @@
 		};
 		BA832D802F90D3000023DEE7 /* Shared */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				BA832D962F92D0000023DEE7 /* Exceptions for "Shared" folder in "TheWidgetExtension" target */,
+			);
 			path = Shared;
 			sourceTree = "<group>";
 		};
