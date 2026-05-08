@@ -79,7 +79,7 @@ enum HandoffMatcher {
             .replacingOccurrences(of: #"\b(remaster(ed)?|deluxe|explicit|clean|single version)\b"#,
                                   with: "",
                                   options: .regularExpression)
-            .replacingOccurrences(of: #"[^a-z0-9]+"#,
+            .replacingOccurrences(of: #"[^\p{L}\p{N}]+"#,
                                   with: " ",
                                   options: .regularExpression)
             .trimmingCharacters(in: .whitespacesAndNewlines)

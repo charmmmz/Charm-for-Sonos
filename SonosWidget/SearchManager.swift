@@ -1462,7 +1462,10 @@ final class SearchManager {
 
         let previousError = errorMessage
         errorMessage = nil
-        let played = await playNowInternal(item: match.item, manager: manager)
+        let transferBackend = manager.transportBackend
+        let transferCloudGroupId = manager.currentCloudGroupId
+        let played = await playNowInternal(item: match.item, manager: manager,
+                                           lockedTarget: selectedSpeaker)
         guard played else {
             throw HandoffTransferError.sonosPlaybackFailed(
                 errorMessage ?? previousError ?? "Couldn’t start playback on Sonos.")
@@ -1473,7 +1476,15 @@ final class SearchManager {
             let maxPosition = track.duration.map {
                 max(0, min(track.position, $0 - 2))
             } ?? track.position
-            await manager.seekTo(maxPosition)
+            if transferBackend == .cloud, let groupId = transferCloudGroupId {
+                try? await SonosCloudAPI.seek(
+                    token: token, groupId: groupId,
+                    positionMillis: Int((maxPosition * 1000.0).rounded()))
+            } else {
+                try? await SonosAPI.seek(
+                    ip: selectedSpeaker.playbackIP,
+                    position: SonosTime.apiFormat(maxPosition))
+            }
             didSeek = true
         }
 
@@ -1505,18 +1516,25 @@ final class SearchManager {
     }
 
     @discardableResult
-    private func playNowInternal(item: BrowseItem, manager: SonosManager) async -> Bool {
+    private func playNowInternal(
+        item: BrowseItem,
+        manager: SonosManager,
+        lockedTarget: SonosPlayer? = nil
+    ) async -> Bool {
         // Push to recents before any await so a failed play still records
         // intent (mirrors Apple Music's "attempted plays" behaviour).
         pushRecentlyPlayed(item)
+        let activeSpeaker = lockedTarget ?? manager.selectedSpeaker
+        let activeBackend = manager.transportBackend
+        let activeCloudGroupId = manager.currentCloudGroupId
 
         // Remote mode: if the item is a cloud-sourced favorite, use the
         // Control API's `loadFavorite` instead of the UPnP SetAVTransportURI
         // / queue path (which doesn't work off-LAN).
-        if manager.transportBackend == .cloud,
+        if activeBackend == .cloud,
            let favId = item.cloudFavoriteId,
            let token = await SonosAuth.shared.validAccessToken(),
-           let gid = manager.currentCloudGroupId {
+           let gid = activeCloudGroupId {
             do {
                 SonosLog.debug(.playback, "remote playNow → loadFavorite(\(favId))")
                 try await SonosCloudAPI.loadFavorite(token: token, groupId: gid,
@@ -1538,14 +1556,14 @@ final class SearchManager {
 
         // Everything below this line uses UPnP — gate on .cloud mode so users
         // get a friendly "Requires LAN" error instead of a silent timeout.
-        if manager.transportBackend == .cloud {
+        if activeBackend == .cloud {
             errorMessage = SonosControlError
                 .unsupportedInCloudMode(feature: "Playing this item")
                 .localizedDescription
             return false
         }
 
-        guard let ip = manager.selectedSpeaker?.playbackIP else {
+        guard let ip = activeSpeaker?.playbackIP else {
             SonosLog.error(.playback, "playNow: no speaker IP")
             return false
         }
@@ -1569,7 +1587,7 @@ final class SearchManager {
         }
 
         do {
-            guard let uuid = manager.selectedSpeaker?.id else {
+            guard let uuid = activeSpeaker?.id else {
                 SonosLog.error(.playback, "playNow: no speaker UUID")
                 return false
             }

@@ -42,6 +42,25 @@ final class HandoffMatcherTests: XCTestCase {
         XCTAssertNotNil(match)
     }
 
+    func testNonLatinTitleAndArtistCanMatch() {
+        let source = AppleMusicHandoffTrack(
+            title: "夜に駆ける",
+            artist: "YOASOBI",
+            album: "夜に駆ける",
+            duration: 261,
+            position: 18,
+            playbackStoreID: nil,
+            persistentID: nil
+        )
+        let candidates = [
+            makeItem(title: "夜に駆ける", artist: "YOASOBI", album: "夜に駆ける", duration: 260)
+        ]
+
+        let match = HandoffMatcher.bestMatch(for: source, candidates: candidates)
+
+        XCTAssertNotNil(match)
+    }
+
     func testRemasterSuffixCanStillMatchWhenArtistAndDurationMatch() {
         let source = AppleMusicHandoffTrack(
             title: "Blue Monday",

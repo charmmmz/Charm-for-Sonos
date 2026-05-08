@@ -42,7 +42,7 @@ final class AppleMusicHandoffManager {
             throw AppleMusicHandoffError.mediaAccessDenied
         }
 
-        guard player.playbackState == .playing || player.playbackState == .paused else {
+        guard player.playbackState == .playing else {
             throw AppleMusicHandoffError.notPlayingAppleMusic
         }
         guard let item = player.nowPlayingItem else {
@@ -55,11 +55,12 @@ final class AppleMusicHandoffManager {
             throw AppleMusicHandoffError.missingTrackMetadata
         }
 
+        let album = trimmed(item.albumTitle)
         let duration = item.playbackDuration > 0 ? item.playbackDuration : nil
         return AppleMusicHandoffTrack(
             title: title,
             artist: artist,
-            album: trimmed(item.albumTitle).isEmpty ? nil : trimmed(item.albumTitle),
+            album: album.isEmpty ? nil : album,
             duration: duration,
             position: max(0, player.currentPlaybackTime),
             playbackStoreID: item.playbackStoreID.isEmpty ? nil : item.playbackStoreID,
