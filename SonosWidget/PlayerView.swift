@@ -65,6 +65,7 @@ struct PlayerView: View {
     @State private var dropTargetGroupID: String?
     @State private var isSeparateZoneTargeted = false
     @State private var isTransferringPlayback = false
+    @State private var speakerCardSizes: [String: CGSize] = [:]
     @State private var homeToastMessage: String?
 
     private var speakersHomeView: some View {
@@ -97,16 +98,27 @@ struct PlayerView: View {
                                 ?? .accentColor
 
                             speakerGroupCard(group)
+                                .background {
+                                    GeometryReader { proxy in
+                                        Color.clear.preference(
+                                            key: SpeakerCardSizePreferenceKey.self,
+                                            value: [group.id: proxy.size]
+                                        )
+                                    }
+                                }
                                 // Drag source: carry the group ID as a String.
                                 .draggable(group.id) {
                                     dragPreview(group)
                                 }
-                                // Drop target: receive another group's ID.
-                                .dropDestination(for: String.self) { items, _ in
+                                // Drop center to group, or top/bottom edges to reorder.
+                                .dropDestination(for: String.self) { items, location in
                                     guard let sourceID = items.first,
                                           sourceID != group.id else { return false }
-                                    Task { await manager.mergeGroups(sourceGroupID: sourceID,
-                                                                     intoGroupID: group.id) }
+                                    handleSpeakerCardDrop(
+                                        sourceID: sourceID,
+                                        targetGroup: group,
+                                        location: location
+                                    )
                                     return true
                                 } isTargeted: { targeted in
                                     withAnimation(.easeInOut(duration: 0.15)) {
@@ -116,9 +128,22 @@ struct PlayerView: View {
                                 // Highlight drop target with an animated border.
                                 .overlay {
                                     if isDropTarget {
-                                        RoundedRectangle(cornerRadius: 14)
-                                            .strokeBorder(dropAccent.opacity(0.8), lineWidth: 2)
-                                            .transition(.opacity)
+                                        ZStack {
+                                            RoundedRectangle(cornerRadius: 14)
+                                                .strokeBorder(dropAccent.opacity(0.8), lineWidth: 2)
+
+                                            VStack {
+                                                Capsule()
+                                                    .fill(dropAccent.opacity(0.85))
+                                                    .frame(width: 56, height: 3)
+                                                Spacer()
+                                                Capsule()
+                                                    .fill(dropAccent.opacity(0.85))
+                                                    .frame(width: 56, height: 3)
+                                            }
+                                            .padding(.vertical, 8)
+                                        }
+                                        .transition(.opacity)
                                     }
                                 }
                                 .scaleEffect(isDropTarget ? 1.02 : 1.0)
@@ -127,6 +152,9 @@ struct PlayerView: View {
                         }
                     }
                     .padding(.horizontal)
+                    .onPreferenceChange(SpeakerCardSizePreferenceKey.self) { sizes in
+                        speakerCardSizes = sizes
+                    }
                 }
 
                 Spacer(minLength: 20)
@@ -358,6 +386,36 @@ struct PlayerView: View {
         }
     }
 
+    private func handleSpeakerCardDrop(
+        sourceID: String,
+        targetGroup: SpeakerGroupStatus,
+        location: CGPoint
+    ) {
+        let targetHeight = speakerCardSizes[targetGroup.id]?.height ?? 0
+        switch SonosManager.speakerGroupDropIntent(locationY: location.y, targetHeight: targetHeight) {
+        case .reorderBefore:
+            withAnimation(.spring(response: 0.28, dampingFraction: 0.8)) {
+                manager.reorderSpeakerGroup(
+                    sourceID: sourceID,
+                    relativeTo: targetGroup.id,
+                    placement: .before
+                )
+            }
+        case .merge:
+            Task {
+                await manager.mergeGroups(sourceGroupID: sourceID, intoGroupID: targetGroup.id)
+            }
+        case .reorderAfter:
+            withAnimation(.spring(response: 0.28, dampingFraction: 0.8)) {
+                manager.reorderSpeakerGroup(
+                    sourceID: sourceID,
+                    relativeTo: targetGroup.id,
+                    placement: .after
+                )
+            }
+        }
+    }
+
     private func speakerGroupCard(_ group: SpeakerGroupStatus) -> some View {
         SpeakerGroupCardView(group: group, manager: manager)
     }
@@ -507,6 +565,14 @@ struct PlayerView: View {
 }
 
 // MARK: - Speaker Group Card
+
+private struct SpeakerCardSizePreferenceKey: PreferenceKey {
+    static var defaultValue: [String: CGSize] = [:]
+
+    static func reduce(value: inout [String: CGSize], nextValue: () -> [String: CGSize]) {
+        value.merge(nextValue()) { _, new in new }
+    }
+}
 
 private struct SpeakerGroupCardView: View {
     let group: SpeakerGroupStatus
