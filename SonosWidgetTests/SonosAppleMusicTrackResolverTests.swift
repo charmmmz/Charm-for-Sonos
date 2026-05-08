@@ -59,6 +59,15 @@ final class SonosAppleMusicTrackResolverTests: XCTestCase {
         XCTAssertEqual(storeID, "1234567890")
     }
 
+    func testStoreIDFromNamespacedNumericObjectID() {
+        XCTAssertEqual(
+            SonosAppleMusicTrackResolver.storeID(fromObjectID: "song:1440857049"),
+            "1440857049")
+        XCTAssertEqual(
+            SonosAppleMusicTrackResolver.storeID(fromObjectID: "track:1440857049"),
+            "1440857049")
+    }
+
     func testStoreIDFromBrowseItemPrefersItemID() {
         let item = BrowseItem(
             id: "100320209876543210",

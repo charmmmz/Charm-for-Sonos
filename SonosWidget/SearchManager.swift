@@ -1648,16 +1648,15 @@ final class SearchManager {
 
     private func directAppleMusicStoreID(from trackURI: String?) -> String? {
         guard let objectID = SonosAppleMusicTrackResolver
-            .trackObjectIDForNowPlaying(fromTrackURI: trackURI) else {
+            .trackObjectIDForNowPlaying(fromTrackURI: trackURI),
+              let storeID = SonosAppleMusicTrackResolver.storeID(fromObjectID: objectID) else {
             return nil
         }
 
-        let lowercasedObjectID = objectID.lowercased()
-        let knownPrefixes = ["10032020", "10032064", "1003206c"]
-        guard knownPrefixes.contains(where: { lowercasedObjectID.hasPrefix($0) }) else {
+        guard storeID != objectID else {
             return nil
         }
-        return SonosAppleMusicTrackResolver.storeID(fromObjectID: objectID)
+        return storeID
     }
 
     private func isKnownNonAppleSource(_ trackInfo: TrackInfo) -> Bool {

@@ -23,6 +23,13 @@ enum SonosAppleMusicTrackResolver {
         ".ogg"
     ]
 
+    private static let numericStoreIDNamespaces: Set<String> = [
+        "song",
+        "songs",
+        "track",
+        "tracks"
+    ]
+
     static func parseTrackURI(_ uri: String?) -> ParsedTrackURI {
         guard let trimmedURI = sanitized(uri), !trimmedURI.isEmpty else {
             return ParsedTrackURI(
@@ -68,9 +75,22 @@ enum SonosAppleMusicTrackResolver {
 
         guard !objectID.isEmpty,
               objectID.allSatisfy({ $0.isNumber }) else {
-            return nil
+            return namespacedNumericStoreID(fromObjectID: objectID)
         }
         return objectID
+    }
+
+    private static func namespacedNumericStoreID(fromObjectID objectID: String) -> String? {
+        let parts = objectID.split(separator: ":").map(String.init)
+        guard parts.count >= 2,
+              let namespace = parts.dropLast().last?.lowercased(),
+              numericStoreIDNamespaces.contains(namespace),
+              let suffix = parts.last,
+              !suffix.isEmpty,
+              suffix.allSatisfy({ $0.isNumber }) else {
+            return nil
+        }
+        return suffix
     }
 
     private static func cloudTrackObjectID(fromObjectID rawObjectID: String?) -> String? {
