@@ -143,6 +143,131 @@ final class HueBridgeClientTests: XCTestCase {
             request.headers["hue-application-key"] == "generated-key"
         })
     }
+
+    func testFetchResourcesResolvesEntertainmentLightServicesToLights() async throws {
+        let transport = MockHueTransport(responses: [
+            "GET /clip/v2/resource/light": """
+            {
+              "data": [
+                {
+                  "id": "light-1",
+                  "metadata": {
+                    "name": "Gradient Strip"
+                  },
+                  "services": [
+                    {
+                      "rid": "service-ent-1",
+                      "rtype": "entertainment"
+                    }
+                  ],
+                  "color": {},
+                  "gradient": {
+                    "points_capable": 5
+                  },
+                  "mode": "normal"
+                }
+              ]
+            }
+            """,
+            "GET /clip/v2/resource/room": """
+            {
+              "data": []
+            }
+            """,
+            "GET /clip/v2/resource/zone": """
+            {
+              "data": []
+            }
+            """,
+            "GET /clip/v2/resource/entertainment_configuration": """
+            {
+              "data": [
+                {
+                  "id": "ent-1",
+                  "metadata": {
+                    "name": "Living Sync"
+                  },
+                  "light_services": [
+                    {
+                      "rid": "service-ent-1",
+                      "rtype": "entertainment"
+                    }
+                  ],
+                  "channels": [
+                    {
+                      "members": [
+                        {
+                          "service": {
+                            "rid": "service-ent-1",
+                            "rtype": "entertainment"
+                          }
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+            """
+        ])
+        let client = HueBridgeClient(
+            bridge: HueBridgeInfo(id: "bridge-1", ipAddress: "192.168.1.20", name: "Home Hue"),
+            credentialStore: HueCredentialStore(storage: InMemoryHueCredentialStorage()),
+            transport: transport,
+            applicationKeyProvider: { "generated-key" }
+        )
+
+        let resources = try await client.fetchResources()
+
+        XCTAssertEqual(resources.areas.first, HueAreaResource(
+            id: "ent-1",
+            name: "Living Sync",
+            kind: .entertainmentArea,
+            childLightIDs: ["light-1"]
+        ))
+    }
+
+    func testFetchResourcesThrowsMissingApplicationKeyBeforeSendingRequest() async throws {
+        let transport = MockHueTransport(responses: [:])
+        let client = HueBridgeClient(
+            bridge: HueBridgeInfo(id: "bridge-1", ipAddress: "192.168.1.20", name: "Home Hue"),
+            credentialStore: HueCredentialStore(storage: InMemoryHueCredentialStorage()),
+            transport: transport
+        )
+
+        do {
+            _ = try await client.fetchResources()
+            XCTFail("Expected missing application key")
+        } catch HueBridgeError.missingApplicationKey {
+            XCTAssertTrue(transport.requests.isEmpty)
+        }
+    }
+
+    func testPairBridgeMapsLinkButtonError101() async throws {
+        let transport = MockHueTransport(responses: [
+            "POST /api": """
+            [
+              {
+                "error": {
+                  "type": 101
+                }
+              }
+            ]
+            """
+        ])
+        let client = HueBridgeClient(
+            bridge: HueBridgeInfo(id: "bridge-1", ipAddress: "192.168.1.20", name: "Home Hue"),
+            credentialStore: HueCredentialStore(storage: InMemoryHueCredentialStorage()),
+            transport: transport
+        )
+
+        do {
+            _ = try await client.pairBridge(deviceType: "Charm Player#iPhone")
+            XCTFail("Expected link button error")
+        } catch HueBridgeError.linkButtonNotPressed {
+            XCTAssertEqual(transport.requests.count, 1)
+        }
+    }
 }
 
 private final class InMemoryHueCredentialStorage: HueCredentialStorage {

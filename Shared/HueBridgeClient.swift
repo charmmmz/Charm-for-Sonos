@@ -1,4 +1,5 @@
 import Foundation
+import Security
 
 struct HueBridgeRequest: Equatable, Sendable {
     var method: String
@@ -89,7 +90,27 @@ final class URLSessionHueBridgeTransport: NSObject, HueBridgeTransport, URLSessi
             return
         }
 
-        completionHandler(.useCredential, URLCredential(trust: serverTrust))
+        guard challenge.protectionSpace.host.matchesHueBridgeHost(baseURL.host) else {
+            completionHandler(.cancelAuthenticationChallenge, nil)
+            return
+        }
+
+        if SecTrustEvaluateWithError(serverTrust, nil) {
+            completionHandler(.useCredential, URLCredential(trust: serverTrust))
+            return
+        }
+
+        if challenge.protectionSpace.host.isLocalHueBridgeHost {
+            completionHandler(.useCredential, URLCredential(trust: serverTrust))
+        } else {
+            completionHandler(.performDefaultHandling, nil)
+        }
+    }
+}
+
+private final class UnavailableHueBridgeTransport: HueBridgeTransport {
+    func send(_ request: HueBridgeRequest) async throws -> Data {
+        throw HueBridgeError.bridgeURLUnavailable
     }
 }
 
@@ -101,7 +122,7 @@ struct HueBridgeResources: Equatable, Sendable {
 struct HueBridgeClient {
     private let bridge: HueBridgeInfo
     private let credentialStore: HueCredentialStore
-    private let transport: HueBridgeTransport?
+    private let transport: HueBridgeTransport
     private let applicationKeyProvider: (() -> String?)?
 
     init(
@@ -112,7 +133,13 @@ struct HueBridgeClient {
     ) {
         self.bridge = bridge
         self.credentialStore = credentialStore
-        self.transport = transport
+        if let transport {
+            self.transport = transport
+        } else if let baseURL = bridge.baseURL {
+            self.transport = URLSessionHueBridgeTransport(baseURL: baseURL)
+        } else {
+            self.transport = UnavailableHueBridgeTransport()
+        }
         self.applicationKeyProvider = applicationKeyProvider
     }
 
@@ -154,7 +181,14 @@ struct HueBridgeClient {
             path: "/clip/v2/resource/entertainment_configuration"
         )
 
-        let entertainmentAreas = entertainmentEnvelope.data.map { $0.resource(kind: .entertainmentArea) }
+        let serviceToLightID = lightEnvelope.data.reduce(into: [String: String]()) { result, light in
+            light.services?.forEach { service in
+                result[service.rid] = light.id
+            }
+        }
+        let entertainmentAreas = entertainmentEnvelope.data.map {
+            $0.resource(kind: .entertainmentArea, serviceToLightID: serviceToLightID)
+        }
         let rooms = roomEnvelope.data.map { $0.resource(kind: .room) }
         let zones = zoneEnvelope.data.map { $0.resource(kind: .zone) }
 
@@ -201,15 +235,52 @@ struct HueBridgeClient {
     }
 
     private func resolvedTransport() throws -> HueBridgeTransport {
-        if let transport {
-            return transport
+        transport
+    }
+}
+
+private extension String {
+    func matchesHueBridgeHost(_ configuredHost: String?) -> Bool {
+        guard let configuredHost else {
+            return false
         }
 
-        guard let baseURL = bridge.baseURL else {
-            throw HueBridgeError.bridgeURLUnavailable
+        return normalizedHueBridgeHost == configuredHost.normalizedHueBridgeHost
+    }
+
+    var isLocalHueBridgeHost: Bool {
+        let host = normalizedHueBridgeHost
+        if host == "localhost" || host == "::1" {
+            return true
+        }
+        if host.hasSuffix(".local") {
+            return true
+        }
+        if !host.contains(".") && !host.contains(":") {
+            return true
         }
 
-        return URLSessionHueBridgeTransport(baseURL: baseURL)
+        return host.isPrivateOrLoopbackIPv4Address
+    }
+
+    private var normalizedHueBridgeHost: String {
+        lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "."))
+    }
+
+    private var isPrivateOrLoopbackIPv4Address: Bool {
+        let octets = split(separator: ".")
+        guard octets.count == 4,
+              let first = UInt8(octets[0]),
+              let second = UInt8(octets[1]),
+              octets.dropFirst(2).allSatisfy({ UInt8($0) != nil }) else {
+            return false
+        }
+
+        return first == 10
+            || first == 127
+            || (first == 172 && (16 ... 31).contains(second))
+            || (first == 192 && second == 168)
+            || (first == 169 && second == 254)
     }
 }
 
@@ -276,6 +347,7 @@ private struct HueLightDTO: Decodable {
     var id: String
     var metadata: HueMetadataDTO?
     var owner: HueResourceReferenceDTO?
+    var services: [HueResourceReferenceDTO]?
     var color: HueJSONPresenceDTO?
     var gradient: HueGradientDTO?
     var mode: String?
@@ -310,21 +382,40 @@ private struct HueAreaDTO: Decodable {
 private struct HueEntertainmentConfigurationDTO: Decodable {
     var id: String
     var metadata: HueMetadataDTO?
+    var lightServices: [HueResourceReferenceDTO]?
     var channels: [HueEntertainmentChannelDTO]?
 
-    func resource(kind: HueAreaResource.Kind) -> HueAreaResource {
-        var seenLightIDs = Set<String>()
-        let lightIDs = channels?
-            .flatMap { $0.members ?? [] }
-            .compactMap(\.service)
-            .compactMap { service -> String? in
-                guard service.rtype == "light", !seenLightIDs.contains(service.rid) else {
-                    return nil
-                }
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case metadata
+        case lightServices = "light_services"
+        case channels
+    }
 
-                seenLightIDs.insert(service.rid)
-                return service.rid
-            } ?? []
+    func resource(
+        kind: HueAreaResource.Kind,
+        serviceToLightID: [String: String] = [:]
+    ) -> HueAreaResource {
+        var seenLightIDs = Set<String>()
+        let channelServices = channels?
+            .flatMap { $0.members ?? [] }
+            .compactMap(\.service) ?? []
+        let serviceReferences = (lightServices ?? []) + channelServices
+        let lightIDs = serviceReferences.compactMap { service -> String? in
+            let lightID: String?
+            if service.rtype == "light" {
+                lightID = service.rid
+            } else {
+                lightID = serviceToLightID[service.rid]
+            }
+
+            guard let lightID, !seenLightIDs.contains(lightID) else {
+                return nil
+            }
+
+            seenLightIDs.insert(lightID)
+            return lightID
+        }
 
         return HueAreaResource(
             id: id,
