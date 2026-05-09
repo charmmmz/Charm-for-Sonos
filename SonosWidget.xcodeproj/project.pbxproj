@@ -69,6 +69,7 @@
 				HandoffMatcher.swift,
 				HueAmbienceModels.swift,
 				HueAmbienceStore.swift,
+				HueCredentialStore.swift,
 			);
 			target = BA832D612F90D2A80023DEE7 /* TheWidgetExtension */;
 		};
@@ -85,6 +86,7 @@
 				HandoffMatcher.swift,
 				HueAmbienceModels.swift,
 				HueAmbienceStore.swift,
+				HueCredentialStore.swift,
 				Models.swift,
 				QueueArtDiskCache.swift,
 				RelayClient.swift,
