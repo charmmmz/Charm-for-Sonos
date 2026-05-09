@@ -346,13 +346,31 @@ struct PlayerView: View {
                 let track = try await AppleMusicHandoffManager.shared.currentAppleMusicTrack()
                 let result = try await searchManager.transferAppleMusicTrack(track, manager: manager)
                 AppleMusicHandoffManager.shared.pausePhonePlayback()
-                $homeToastMessage.showToast("Transferred to \(result.targetName)")
+                var messages = [forwardHandoffSuccessMessage(for: result)]
+                if result.skippedUnsupportedItemCount > 0 {
+                    messages.append("Skipped \(result.skippedUnsupportedItemCount) unavailable album tracks")
+                }
+                if let warning = result.warningMessage {
+                    manager.errorMessage = warning
+                    messages.append(warning)
+                }
+                $homeToastMessage.showToast(messages.joined(separator: ". "))
             } catch {
                 manager.errorMessage = error.localizedDescription
                 $homeToastMessage.showToast(error.localizedDescription)
             }
             isTransferringPlayback = false
         }
+    }
+
+    private func forwardHandoffSuccessMessage(for result: HandoffResult) -> String {
+        if result.usedAlbumQueue {
+            return "Transferred album to \(result.targetName)"
+        }
+        if result.warningMessage != nil {
+            return "Transferred current song"
+        }
+        return "Transferred to \(result.targetName)"
     }
 
     private func handoffPlayback() {
