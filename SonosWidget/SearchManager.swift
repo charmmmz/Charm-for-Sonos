@@ -1508,6 +1508,113 @@ final class SearchManager {
         return "x-rincon-cpcontainer:\(itemId)?sid=\(params.sid)&flags=\(flags)&sn=\(params.sn)"
     }
 
+    private func forwardAlbumQueueAttempt(
+        sourceTrack: AppleMusicHandoffTrack,
+        matchedCandidate: ForwardCloudTrackCandidate,
+        token: String,
+        householdId: String,
+        serviceId: String,
+        accountId: String,
+        manager: SonosManager
+    ) async -> ForwardAlbumQueueAttempt? {
+        guard manager.transportBackend != .cloud else { return nil }
+
+        guard let albumId = await forwardAlbumId(
+            from: matchedCandidate.resource,
+            matchedItem: matchedCandidate.item,
+            token: token,
+            householdId: householdId,
+            serviceId: serviceId,
+            accountId: accountId) else {
+            return nil
+        }
+
+        do {
+            let response = try await SonosCloudAPI.browseAlbum(
+                token: token,
+                householdId: householdId,
+                serviceId: serviceId,
+                accountId: accountId,
+                albumId: albumId,
+                count: AppleMusicForwardAlbumQueuePlanner.defaultMaxItems)
+            let albumTitle = response.title ?? matchedCandidate.item.album
+            let fallbackArtURL = response.images?.tile1x1
+                ?? matchedCandidate.item.albumArtURL
+                ?? matchedCandidate.resource.container?.images?.first?.url
+                ?? matchedCandidate.resource.images?.first?.url
+            let albumTracks = response.tracks?.items ?? response.section?.items ?? []
+            let candidates = albumTracks.compactMap {
+                forwardAlbumCandidate(
+                    from: $0,
+                    fallbackAlbumTitle: albumTitle,
+                    fallbackArtURL: fallbackArtURL,
+                    serviceId: serviceId,
+                    accountId: accountId)
+            }
+
+            guard let plan = AppleMusicForwardAlbumQueuePlanner.makePlan(
+                albumTracks: candidates,
+                matchedItem: matchedCandidate.item,
+                sourceTrack: sourceTrack) else {
+                return nil
+            }
+
+            return ForwardAlbumQueueAttempt(plan: plan)
+        } catch {
+            SonosLog.error(.cloudAPI, "Forward handoff album browse failed: \(error)")
+            return nil
+        }
+    }
+
+    private func playForwardAlbumQueue(
+        _ plan: AppleMusicForwardAlbumQueuePlan,
+        sourceTrack: AppleMusicHandoffTrack,
+        selectedSpeaker: SonosPlayer,
+        manager: SonosManager
+    ) async -> (played: Bool, seeked: Bool) {
+        guard manager.transportBackend != .cloud else { return (false, false) }
+
+        do {
+            try await SonosAPI.removeAllTracksFromQueue(ip: selectedSpeaker.playbackIP)
+
+            for item in plan.items {
+                guard let uri = item.uri, !uri.isEmpty else { continue }
+                _ = try await SonosAPI.addURIToQueue(
+                    ip: selectedSpeaker.playbackIP,
+                    uri: uri,
+                    metadata: playbackMetadata(for: item))
+            }
+
+            try await SonosAPI.setAVTransportToQueue(
+                ip: selectedSpeaker.playbackIP,
+                speakerUUID: selectedSpeaker.id)
+            try await SonosAPI.seekToTrack(
+                ip: selectedSpeaker.playbackIP,
+                trackNumber: plan.targetTrackNumber)
+            try await SonosAPI.play(ip: selectedSpeaker.playbackIP)
+
+            var didSeek = false
+            if sourceTrack.position > 3 {
+                let maxPosition = sourceTrack.duration.map {
+                    max(0, min(sourceTrack.position, $0 - 2))
+                } ?? sourceTrack.position
+                try? await SonosAPI.seek(
+                    ip: selectedSpeaker.playbackIP,
+                    position: SonosTime.apiFormat(maxPosition))
+                didSeek = true
+            }
+
+            try? await Task.sleep(for: .milliseconds(playbackSettleDelayMs))
+            await manager.refreshState()
+            await manager.loadQueue()
+            return (true, didSeek)
+        } catch {
+            SonosLog.error(.playback, "Forward album queue handoff failed: \(error)")
+            errorMessage = error.localizedDescription
+            return (false, false)
+        }
+    }
+
     func transferAppleMusicTrack(
         _ track: AppleMusicHandoffTrack,
         manager: SonosManager
@@ -1558,12 +1665,39 @@ final class SearchManager {
               let matchedCloudCandidate = cloudCandidates.first(where: { $0.item == match.item }) else {
             throw HandoffTransferError.noConfidentMatch
         }
-        _ = matchedCloudCandidate
 
         let previousError = errorMessage
         errorMessage = nil
         let transferBackend = manager.transportBackend
         let transferCloudGroupId = manager.currentCloudGroupId
+        if let albumAttempt = await forwardAlbumQueueAttempt(
+            sourceTrack: track,
+            matchedCandidate: matchedCloudCandidate,
+            token: token,
+            householdId: householdId,
+            serviceId: serviceId,
+            accountId: accountId,
+            manager: manager) {
+            let albumPlayback = await playForwardAlbumQueue(
+                albumAttempt.plan,
+                sourceTrack: track,
+                selectedSpeaker: selectedSpeaker,
+                manager: manager)
+            if albumPlayback.played {
+                return HandoffResult(
+                    matchedTitle: match.item.title,
+                    targetName: selectedSpeaker.name,
+                    seeked: albumPlayback.seeked,
+                    transferredTrackCount: albumAttempt.plan.transferredTrackCount,
+                    skippedUnsupportedItemCount: albumAttempt.plan.skippedUnsupportedItemCount,
+                    warningMessage: nil,
+                    usedAlbumQueue: true)
+            }
+
+            // Album queue sync is best-effort; do not leave its error visible if single-track fallback succeeds.
+            errorMessage = nil
+        }
+
         let played = await playNowInternal(item: match.item, manager: manager,
                                            lockedTarget: selectedSpeaker)
         guard played else {
@@ -1589,13 +1723,17 @@ final class SearchManager {
         }
 
         await manager.refreshState()
+        let warningMessage = transferBackend == .cloud
+            ? "Queue sync requires the same network"
+            : nil
+
         return HandoffResult(
             matchedTitle: match.item.title,
             targetName: selectedSpeaker.name,
             seeked: didSeek,
             transferredTrackCount: 1,
             skippedUnsupportedItemCount: 0,
-            warningMessage: nil,
+            warningMessage: warningMessage,
             usedAlbumQueue: false)
     }
 
