@@ -1598,10 +1598,14 @@ final class SearchManager {
                 let maxPosition = sourceTrack.duration.map {
                     max(0, min(sourceTrack.position, $0 - 2))
                 } ?? sourceTrack.position
-                try? await SonosAPI.seek(
-                    ip: selectedSpeaker.playbackIP,
-                    position: SonosTime.apiFormat(maxPosition))
-                didSeek = true
+                do {
+                    try await SonosAPI.seek(
+                        ip: selectedSpeaker.playbackIP,
+                        position: SonosTime.apiFormat(maxPosition))
+                    didSeek = true
+                } catch {
+                    SonosLog.error(.playback, "Forward album queue seek failed: \(error)")
+                }
             }
 
             try? await Task.sleep(for: .milliseconds(playbackSettleDelayMs))
