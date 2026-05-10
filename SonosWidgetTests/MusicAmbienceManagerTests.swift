@@ -69,6 +69,47 @@ final class MusicAmbienceManagerTests: XCTestCase {
         XCTAssertEqual(manager.mappingsForCurrentPlayback(snapshot).map(\.sonosID), ["living"])
     }
 
+    func testSnapshotUsesSelectedSpeakerAndVisibleGroupMembers() {
+        let selected = SonosPlayer(
+            id: "living",
+            name: "Living",
+            ipAddress: "192.168.1.10",
+            isCoordinator: true,
+            groupId: "group-1"
+        )
+        let kitchen = SonosPlayer(
+            id: "kitchen",
+            name: "Kitchen",
+            ipAddress: "192.168.1.11",
+            isCoordinator: false,
+            groupId: "group-1"
+        )
+        let info = TrackInfo(
+            title: "Song",
+            artist: "Artist",
+            album: "Album",
+            albumArtURL: "https://example.com/art.jpg"
+        )
+
+        let snapshot = SonosManager.musicAmbienceSnapshot(
+            selectedSpeaker: selected,
+            currentGroupMembers: [selected, kitchen],
+            trackInfo: info,
+            isPlaying: true,
+            albumArtData: Data([1, 2, 3])
+        )
+
+        XCTAssertEqual(snapshot.selectedSonosID, "living")
+        XCTAssertEqual(snapshot.selectedSonosName, "Living")
+        XCTAssertEqual(snapshot.groupMemberIDs, ["living", "kitchen"])
+        XCTAssertEqual(snapshot.groupMemberNamesByID["kitchen"], "Kitchen")
+        XCTAssertEqual(snapshot.trackTitle, "Song")
+        XCTAssertEqual(snapshot.artist, "Artist")
+        XCTAssertEqual(snapshot.albumArtURL, "https://example.com/art.jpg")
+        XCTAssertTrue(snapshot.isPlaying)
+        XCTAssertEqual(snapshot.albumArtImage, Data([1, 2, 3]))
+    }
+
     private func makeStore() -> HueAmbienceStore {
         let suiteName = "MusicAmbienceManagerTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!

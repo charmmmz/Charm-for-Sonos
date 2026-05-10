@@ -231,6 +231,31 @@ final class SonosManager {
         status.coordinator.groupId ?? status.id
     }
 
+    nonisolated static func musicAmbienceSnapshot(
+        selectedSpeaker: SonosPlayer?,
+        currentGroupMembers: [SonosPlayer],
+        trackInfo: TrackInfo?,
+        isPlaying: Bool,
+        albumArtData: Data?
+    ) -> HueAmbiencePlaybackSnapshot {
+        let visibleMembers = currentGroupMembers.filter { !$0.isInvisible }
+        let members = visibleMembers.isEmpty
+            ? selectedSpeaker.map { [$0] } ?? []
+            : visibleMembers
+
+        return HueAmbiencePlaybackSnapshot(
+            selectedSonosID: selectedSpeaker?.id,
+            selectedSonosName: selectedSpeaker?.name,
+            groupMemberIDs: members.map(\.id),
+            groupMemberNamesByID: Dictionary(uniqueKeysWithValues: members.map { ($0.id, $0.name) }),
+            trackTitle: trackInfo?.title,
+            artist: trackInfo?.artist,
+            albumArtURL: trackInfo?.albumArtURL,
+            isPlaying: isPlaying,
+            albumArtImage: albumArtData
+        )
+    }
+
     nonisolated static func speakerGroupDropIntent(
         locationY: CGFloat,
         targetHeight: CGFloat
@@ -886,6 +911,16 @@ final class SonosManager {
         guard let selected = selectedSpeaker else { return [] }
         let groupId = selected.groupId ?? selected.id
         return allSpeakers.filter { $0.groupId == groupId && !$0.isInvisible }
+    }
+
+    func musicAmbienceSnapshot() -> HueAmbiencePlaybackSnapshot {
+        Self.musicAmbienceSnapshot(
+            selectedSpeaker: selectedSpeaker,
+            currentGroupMembers: currentGroupMembers,
+            trackInfo: trackInfo,
+            isPlaying: isPlaying,
+            albumArtData: albumArtImage?.jpegData(compressionQuality: 0.85)
+        )
     }
 
     var isEverywhereActive: Bool {
@@ -1588,6 +1623,7 @@ final class SonosManager {
             await enrichAudioQualityFromCloud()
             updateSharedCache()
             await loadAlbumArt()
+            MusicAmbienceManager.shared.receive(snapshot: musicAmbienceSnapshot())
             if queueLoaded { await loadQueue() }
             managePositionTimer()
             manageLiveActivity()
@@ -1687,6 +1723,7 @@ final class SonosManager {
 
             updateSharedCache()
             await loadAlbumArt()
+            MusicAmbienceManager.shared.receive(snapshot: musicAmbienceSnapshot())
             managePositionTimer()
             manageLiveActivity()
         } catch SonosCloudError.unauthorized {

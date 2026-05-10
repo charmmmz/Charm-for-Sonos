@@ -54,6 +54,7 @@ struct ContentView: View {
             // APNs mode the moment the NAS is reachable, without making the
             // user open Settings first.
             RelayManager.shared.startPeriodicProbe()
+            MusicAmbienceManager.shared.refreshStatus()
         }
         .onDisappear {
             manager.stopAutoRefresh()
