@@ -81,6 +81,45 @@ final class HueAmbienceStoreTests: XCTestCase {
         XCTAssertEqual(restored.mapping(forSonosID: "RINCON_kitchen")?.preferredTarget, .entertainmentArea("ent-kitchen"))
     }
 
+    func testAssignAreaPersistsSelectedHueAreaImmediately() {
+        let suiteName = "HueAmbienceStoreTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let storage = HueAmbienceDefaults(defaults: defaults)
+        let store = HueAmbienceStore(storage: storage)
+
+        let didAssign = store.assignArea(
+            sonosID: "RINCON_playroom",
+            sonosName: "Playroom",
+            areaID: "ent-playroom",
+            from: [
+                HueAreaResource(
+                    id: "ent-playroom",
+                    name: "PC",
+                    kind: .entertainmentArea,
+                    childLightIDs: ["light-1"]
+                )
+            ],
+            lights: [
+                HueLightResource(
+                    id: "light-1",
+                    name: "Gradient Strip",
+                    ownerID: nil,
+                    supportsColor: true,
+                    supportsGradient: true,
+                    supportsEntertainment: true
+                )
+            ]
+        )
+
+        let restored = HueAmbienceStore(storage: storage)
+
+        XCTAssertTrue(didAssign)
+        XCTAssertEqual(restored.mapping(forSonosID: "RINCON_playroom")?.preferredTarget, .entertainmentArea("ent-playroom"))
+        XCTAssertEqual(restored.mapping(forSonosID: "RINCON_playroom")?.capability, .liveEntertainment)
+    }
+
     func testStorePersistsHueResources() {
         let suiteName = "HueAmbienceStoreTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!

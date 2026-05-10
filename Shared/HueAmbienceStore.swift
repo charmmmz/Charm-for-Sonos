@@ -227,6 +227,27 @@ final class HueAmbienceStore {
         }
     }
 
+    @discardableResult
+    func assignArea(
+        sonosID: String,
+        sonosName: String,
+        areaID: String,
+        from areas: [HueAreaResource],
+        lights: [HueLightResource]
+    ) -> Bool {
+        guard let area = areas.first(where: { $0.id == areaID }) else {
+            return false
+        }
+
+        upsertMapping(HueAmbienceAreaOptions.mapping(
+            sonosID: sonosID,
+            sonosName: sonosName,
+            selectedArea: area,
+            lights: lights
+        ))
+        return true
+    }
+
     func removeMapping(forSonosID sonosID: String) {
         mappings.removeAll { $0.sonosID == sonosID }
     }

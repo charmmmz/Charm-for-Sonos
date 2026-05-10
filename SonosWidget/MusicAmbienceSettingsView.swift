@@ -416,21 +416,14 @@ private struct HueMappingRow: View {
             }
 
             Button {
-                guard let selectedArea else {
-                    return
-                }
-
-                store.upsertMapping(HueAmbienceAreaOptions.mapping(
-                    sonosID: speaker.id,
-                    sonosName: speaker.name,
-                    selectedArea: selectedArea,
-                    lights: lights
-                ))
-                manager.refreshStatus()
+                saveSelectedArea()
             } label: {
-                Label("Save Assignment", systemImage: "checkmark.circle")
+                Label(
+                    isSelectedAreaSaved ? "Saved Assignment" : "Save Assignment",
+                    systemImage: isSelectedAreaSaved ? "checkmark.circle.fill" : "checkmark.circle"
+                )
             }
-            .disabled(selectedArea == nil)
+            .disabled(selectedArea == nil || isSelectedAreaSaved)
 
             if store.mapping(forSonosID: speaker.id) != nil {
                 Button(role: .destructive) {
@@ -449,10 +442,42 @@ private struct HueMappingRow: View {
         .onChange(of: areas.map(\.id)) {
             syncSelectionFromMapping()
         }
+        .onChange(of: selectedAreaID) {
+            saveSelectedAreaIfChanged()
+        }
     }
 
     private var selectedArea: HueAreaResource? {
         areas.first { $0.id == selectedAreaID }
+    }
+
+    private var isSelectedAreaSaved: Bool {
+        guard let selectedArea else {
+            return false
+        }
+
+        return store.mapping(forSonosID: speaker.id)?.preferredTarget == selectedArea.ambienceTarget
+    }
+
+    private func saveSelectedAreaIfChanged() {
+        guard !isSelectedAreaSaved else {
+            return
+        }
+
+        saveSelectedArea()
+    }
+
+    private func saveSelectedArea() {
+        let didSave = store.assignArea(
+            sonosID: speaker.id,
+            sonosName: speaker.name,
+            areaID: selectedAreaID,
+            from: areas,
+            lights: lights
+        )
+        if didSave {
+            manager.refreshStatus()
+        }
     }
 
     private func syncSelectionFromMapping() {
