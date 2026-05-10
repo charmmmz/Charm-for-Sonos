@@ -59,6 +59,123 @@ final class HueAmbienceStoreTests: XCTestCase {
         XCTAssertEqual(restored.mapping(forSonosID: "RINCON_kitchen")?.preferredTarget, .entertainmentArea("ent-kitchen"))
     }
 
+    func testStorePersistsHueResources() {
+        let suiteName = "HueAmbienceStoreTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let storage = HueAmbienceDefaults(defaults: defaults)
+        let store = HueAmbienceStore(storage: storage)
+
+        store.updateResources(HueBridgeResources(
+            lights: [
+                HueLightResource(
+                    id: "light-1",
+                    name: "Gradient Strip",
+                    ownerID: "room-1",
+                    supportsColor: true,
+                    supportsGradient: true,
+                    supportsEntertainment: true
+                )
+            ],
+            areas: [
+                HueAreaResource(
+                    id: "room-1",
+                    name: "Living Room",
+                    kind: .room,
+                    childLightIDs: ["light-1"]
+                )
+            ]
+        ))
+
+        let restored = HueAmbienceStore(storage: storage)
+
+        XCTAssertEqual(restored.hueLights.map(\.id), ["light-1"])
+        XCTAssertEqual(restored.hueAreas.map(\.id), ["room-1"])
+    }
+
+    func testChangingBridgeClearsMappingsAndHueResources() {
+        let suiteName = "HueAmbienceStoreTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let storage = HueAmbienceDefaults(defaults: defaults)
+        let store = HueAmbienceStore(storage: storage)
+        store.bridge = HueBridgeInfo(id: "bridge-1", ipAddress: "192.168.1.20", name: "Home Hue")
+        store.upsertMapping(HueSonosMapping(
+            sonosID: "living",
+            sonosName: "Living",
+            preferredTarget: .room("room-1")
+        ))
+        store.updateResources(HueBridgeResources(
+            lights: [
+                HueLightResource(
+                    id: "light-1",
+                    name: "Lamp",
+                    ownerID: "room-1",
+                    supportsColor: true,
+                    supportsGradient: false,
+                    supportsEntertainment: false
+                )
+            ],
+            areas: [
+                HueAreaResource(
+                    id: "room-1",
+                    name: "Living Room",
+                    kind: .room,
+                    childLightIDs: ["light-1"]
+                )
+            ]
+        ))
+
+        store.bridge = HueBridgeInfo(id: "bridge-2", ipAddress: "192.168.1.21", name: "New Hue")
+        let restored = HueAmbienceStore(storage: storage)
+
+        XCTAssertEqual(restored.bridge?.id, "bridge-2")
+        XCTAssertTrue(restored.mappings.isEmpty)
+        XCTAssertTrue(restored.hueLights.isEmpty)
+        XCTAssertTrue(restored.hueAreas.isEmpty)
+    }
+
+    func testStoreIgnoresHueResourcesForStaleBridgeID() {
+        let suiteName = "HueAmbienceStoreTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let storage = HueAmbienceDefaults(defaults: defaults)
+        let store = HueAmbienceStore(storage: storage)
+        store.bridge = HueBridgeInfo(id: "bridge-1", ipAddress: "192.168.1.20", name: "Home Hue")
+        store.bridge = HueBridgeInfo(id: "bridge-2", ipAddress: "192.168.1.21", name: "New Hue")
+
+        let didUpdate = store.updateResources(
+            HueBridgeResources(
+                lights: [
+                    HueLightResource(
+                        id: "light-1",
+                        name: "Lamp",
+                        ownerID: "room-1",
+                        supportsColor: true,
+                        supportsGradient: false,
+                        supportsEntertainment: false
+                    )
+                ],
+                areas: [
+                    HueAreaResource(
+                        id: "room-1",
+                        name: "Living Room",
+                        kind: .room,
+                        childLightIDs: ["light-1"]
+                    )
+                ]
+            ),
+            forBridgeID: "bridge-1"
+        )
+
+        XCTAssertFalse(didUpdate)
+        XCTAssertTrue(store.hueLights.isEmpty)
+        XCTAssertTrue(store.hueAreas.isEmpty)
+    }
+
     func testRemovingBridgeClearsMappingsAndDisablesSync() {
         let suiteName = "HueAmbienceStoreTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!

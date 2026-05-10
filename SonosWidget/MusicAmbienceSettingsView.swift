@@ -273,6 +273,8 @@ private struct HueAmbienceSetupSheet: View {
         bridgeIP = bridge.ipAddress
         bridgeName = bridge.name
         mergeDiscoveredBridge(bridge)
+        hueAreas = store.hueAreas
+        hueLights = store.hueLights
 
         if hueAreas.isEmpty {
             Task { await refreshHueResources() }
@@ -324,16 +326,23 @@ private struct HueAmbienceSetupSheet: View {
             let client = HueBridgeClient(bridge: bridge)
             _ = try await client.pairBridge(deviceType: "Charm Player#iPhone")
             store.bridge = bridge
+            hueAreas = store.hueAreas
+            hueLights = store.hueLights
             bridgeIP = bridge.ipAddress
             bridgeName = bridge.name
             mergeDiscoveredBridge(bridge)
+            manager.refreshStatus()
 
             let resources = try await client.fetchResources()
+            guard store.updateResources(resources, forBridgeID: bridge.id) else {
+                return
+            }
             hueAreas = resources.areas
             hueLights = resources.lights
             manager.refreshStatus()
         } catch {
             setupError = error.localizedDescription
+            manager.refreshStatus()
         }
     }
 
@@ -348,6 +357,9 @@ private struct HueAmbienceSetupSheet: View {
 
         do {
             let resources = try await HueBridgeClient(bridge: bridge).fetchResources()
+            guard store.updateResources(resources, forBridgeID: bridge.id) else {
+                return
+            }
             hueAreas = resources.areas
             hueLights = resources.lights
         } catch {

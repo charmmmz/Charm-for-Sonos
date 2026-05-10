@@ -6,6 +6,68 @@ struct HueResolvedAmbienceTarget: Equatable, Sendable {
     var lightsByID: [String: HueLightResource]
 }
 
+protocol HueAmbienceRendering {
+    func apply(
+        palette: [HueRGBColor],
+        to targets: [HueResolvedAmbienceTarget],
+        transitionSeconds: Double
+    ) async throws
+}
+
+protocol HueTargetResolving {
+    func resolveTargets(for mappings: [HueSonosMapping]) -> [HueResolvedAmbienceTarget]
+}
+
+struct StoredHueTargetResolver: HueTargetResolving {
+    var areas: [HueAreaResource]
+    var lights: [HueLightResource]
+
+    func resolveTargets(for mappings: [HueSonosMapping]) -> [HueResolvedAmbienceTarget] {
+        let lightsByID = Self.lightsByID(from: lights)
+        var seenAreaIDs = Set<String>()
+
+        return mappings.compactMap { mapping in
+            for target in [mapping.preferredTarget, mapping.fallbackTarget].compactMap({ $0 }) {
+                guard let area = area(for: target) else {
+                    continue
+                }
+
+                let lightIDs = area.childLightIDs.filter {
+                    !mapping.excludedLightIDs.contains($0) && lightsByID[$0] != nil
+                }
+                guard !lightIDs.isEmpty else {
+                    continue
+                }
+                guard seenAreaIDs.insert(area.id).inserted else {
+                    continue
+                }
+
+                return HueResolvedAmbienceTarget(
+                    areaID: area.id,
+                    lightIDs: lightIDs,
+                    lightsByID: lightsByID
+                )
+            }
+
+            return nil
+        }
+    }
+
+    private func area(for target: HueAmbienceTarget) -> HueAreaResource? {
+        areas.first { area in
+            area.id == target.id && area.kind.matches(target)
+        } ?? areas.first { area in
+            area.id == target.id
+        }
+    }
+
+    private static func lightsByID(from lights: [HueLightResource]) -> [String: HueLightResource] {
+        lights.reduce(into: [String: HueLightResource]()) { result, light in
+            result[light.id] = light
+        }
+    }
+}
+
 struct HueAmbienceRenderer {
     private let lightClient: HueLightUpdating
 
@@ -90,5 +152,20 @@ struct HueAmbienceRenderer {
         guard !palette.isEmpty else { return [] }
         let shift = offset % palette.count
         return Array(palette[shift...] + palette[..<shift])
+    }
+}
+
+extension HueAmbienceRenderer: HueAmbienceRendering {}
+
+private extension HueAreaResource.Kind {
+    func matches(_ target: HueAmbienceTarget) -> Bool {
+        switch (self, target) {
+        case (.entertainmentArea, .entertainmentArea),
+             (.room, .room),
+             (.zone, .zone):
+            return true
+        default:
+            return false
+        }
     }
 }

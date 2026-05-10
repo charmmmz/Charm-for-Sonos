@@ -114,9 +114,11 @@ private final class UnavailableHueBridgeTransport: HueBridgeTransport {
     }
 }
 
-struct HueBridgeResources: Equatable, Sendable {
+struct HueBridgeResources: Codable, Equatable, Sendable {
     var lights: [HueLightResource]
     var areas: [HueAreaResource]
+
+    static let empty = HueBridgeResources(lights: [], areas: [])
 }
 
 struct HueBridgeDiscoveryResult: Decodable, Equatable, Sendable {

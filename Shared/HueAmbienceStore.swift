@@ -5,6 +5,7 @@ protocol HueAmbienceStorage: AnyObject {
     var isEnabled: Bool { get set }
     var bridgeData: Data? { get set }
     var mappingsData: Data? { get set }
+    var resourcesData: Data? { get set }
     var groupStrategyRaw: String? { get set }
     var statusText: String? { get set }
 }
@@ -60,6 +61,22 @@ final class HueAmbienceDefaults: HueAmbienceStorage {
                 updateOptional(newValue, forKey: "hueMappingsData", in: defaults)
             } else {
                 SharedStorage.hueMappingsData = newValue
+            }
+        }
+    }
+
+    var resourcesData: Data? {
+        get {
+            if let defaults {
+                return defaults.data(forKey: "hueResourcesData")
+            }
+            return SharedStorage.hueResourcesData
+        }
+        set {
+            if let defaults {
+                updateOptional(newValue, forKey: "hueResourcesData", in: defaults)
+            } else {
+                SharedStorage.hueResourcesData = newValue
             }
         }
     }
@@ -121,6 +138,10 @@ final class HueAmbienceStore {
 
     var bridge: HueBridgeInfo? {
         didSet {
+            if oldValue?.id != bridge?.id {
+                mappings = []
+                hueResources = .empty
+            }
             persistBridge()
         }
     }
@@ -129,6 +150,20 @@ final class HueAmbienceStore {
         didSet {
             persistMappings()
         }
+    }
+
+    var hueResources: HueBridgeResources {
+        didSet {
+            persistResources()
+        }
+    }
+
+    var hueLights: [HueLightResource] {
+        hueResources.lights
+    }
+
+    var hueAreas: [HueAreaResource] {
+        hueResources.areas
     }
 
     var groupStrategy: HueGroupSyncStrategy {
@@ -149,6 +184,7 @@ final class HueAmbienceStore {
         self.isEnabled = storage.isEnabled
         self.bridge = Self.decode(HueBridgeInfo.self, from: storage.bridgeData)
         self.mappings = Self.decode([HueSonosMapping].self, from: storage.mappingsData) ?? []
+        self.hueResources = Self.decode(HueBridgeResources.self, from: storage.resourcesData) ?? .empty
         self.groupStrategy = storage.groupStrategyRaw
             .flatMap(HueGroupSyncStrategy.init(rawValue:)) ?? .default
         self.statusText = storage.statusText
@@ -170,10 +206,24 @@ final class HueAmbienceStore {
         mappings.removeAll { $0.sonosID == sonosID }
     }
 
+    func updateResources(_ resources: HueBridgeResources) {
+        hueResources = resources
+    }
+
+    func updateResources(_ resources: HueBridgeResources, forBridgeID bridgeID: String) -> Bool {
+        guard bridge?.id == bridgeID else {
+            return false
+        }
+
+        updateResources(resources)
+        return true
+    }
+
     func disconnectBridge() {
         isEnabled = false
         bridge = nil
         mappings = []
+        hueResources = .empty
         statusText = nil
     }
 
@@ -187,6 +237,10 @@ final class HueAmbienceStore {
 
     private func persistMappings() {
         storage.mappingsData = try? encoder.encode(mappings)
+    }
+
+    private func persistResources() {
+        storage.resourcesData = try? encoder.encode(hueResources)
     }
 
     private static func decode<T: Decodable>(_ type: T.Type, from data: Data?) -> T? {

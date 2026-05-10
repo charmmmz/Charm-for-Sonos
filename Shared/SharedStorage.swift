@@ -204,6 +204,11 @@ enum SharedStorage {
         set { defaults.set(newValue, forKey: "hueMappingsData") }
     }
 
+    nonisolated static var hueResourcesData: Data? {
+        get { defaults.data(forKey: "hueResourcesData") }
+        set { defaults.set(newValue, forKey: "hueResourcesData") }
+    }
+
     nonisolated static var hueGroupStrategyRaw: String? {
         get { defaults.string(forKey: "hueGroupStrategy") }
         set { defaults.set(newValue, forKey: "hueGroupStrategy") }

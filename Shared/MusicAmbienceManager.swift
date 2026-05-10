@@ -34,18 +34,31 @@ final class MusicAmbienceManager {
     private(set) var status: Status = .unconfigured
 
     @ObservationIgnored private let store: HueAmbienceStore
+    @ObservationIgnored private let renderer: HueAmbienceRendering?
+    @ObservationIgnored private let targetResolver: HueTargetResolving?
     @ObservationIgnored private var lastTrackKey: String?
     @ObservationIgnored private var lastPalette: [HueRGBColor] = []
+    @ObservationIgnored private var lastRenderSignature: RenderSignature?
+    @ObservationIgnored private var renderTask: Task<Void, Never>?
+    @ObservationIgnored private var renderGeneration = 0
 
-    init(store: HueAmbienceStore? = nil) {
+    init(
+        store: HueAmbienceStore? = nil,
+        renderer: HueAmbienceRendering? = nil,
+        targetResolver: HueTargetResolving? = nil
+    ) {
         self.store = store ?? .shared
+        self.renderer = renderer
+        self.targetResolver = targetResolver
         refreshStatus()
     }
 
     func refreshStatus() {
         if !store.isEnabled {
+            resetRenderState()
             setStatus(.disabled)
         } else if store.bridge == nil || store.mappings.isEmpty {
+            resetRenderState()
             setStatus(.unconfigured)
         } else {
             setStatus(.idle)
@@ -74,20 +87,24 @@ final class MusicAmbienceManager {
 
     func receive(snapshot: HueAmbiencePlaybackSnapshot) {
         guard store.isEnabled else {
+            resetRenderState()
             setStatus(.disabled)
             return
         }
         guard store.bridge != nil else {
+            resetRenderState()
             setStatus(.unconfigured)
             return
         }
         guard snapshot.isPlaying else {
+            resetRenderState()
             setStatus(.idle)
             return
         }
 
         let mappings = mappingsForCurrentPlayback(snapshot)
         guard !mappings.isEmpty else {
+            resetRenderState()
             setStatus(.paused("No Hue area mapped"))
             return
         }
@@ -95,7 +112,7 @@ final class MusicAmbienceManager {
         let trackKey = [snapshot.trackTitle, snapshot.artist, snapshot.albumArtURL]
             .compactMap { $0 }
             .joined(separator: "|")
-        if trackKey != lastTrackKey {
+        if trackKey != lastTrackKey || lastPalette.isEmpty {
             lastTrackKey = trackKey
             if let data = snapshot.albumArtImage, let image = UIImage(data: data) {
                 lastPalette = AlbumPaletteExtractor.palette(from: image)
@@ -103,10 +120,85 @@ final class MusicAmbienceManager {
         }
 
         setStatus(.syncing("Syncing \(mappings.count) Hue area\(mappings.count == 1 ? "" : "s")"))
+        applyPalette(to: mappings, trackKey: trackKey)
     }
 
     private func setStatus(_ newStatus: Status) {
         status = newStatus
         store.statusText = newStatus.title
     }
+
+    private func applyPalette(to mappings: [HueSonosMapping], trackKey: String) {
+        let resolvedTargets = (targetResolver ?? StoredHueTargetResolver(
+            areas: store.hueAreas,
+            lights: store.hueLights
+        )).resolveTargets(for: mappings)
+        guard !resolvedTargets.isEmpty, !lastPalette.isEmpty else {
+            return
+        }
+
+        let palette = lastPalette
+        let signature = RenderSignature(
+            trackKey: trackKey,
+            palette: palette,
+            targets: resolvedTargets
+        )
+        guard signature != lastRenderSignature else {
+            return
+        }
+        lastRenderSignature = signature
+
+        guard let renderer = renderer ?? defaultRenderer() else {
+            return
+        }
+
+        renderTask?.cancel()
+        renderGeneration += 1
+        let generation = renderGeneration
+        renderTask = Task {
+            do {
+                try await renderer.apply(
+                    palette: palette,
+                    to: resolvedTargets,
+                    transitionSeconds: 4
+                )
+                if renderGeneration == generation {
+                    renderTask = nil
+                }
+            } catch is CancellationError {
+                if renderGeneration == generation {
+                    renderTask = nil
+                }
+            } catch {
+                guard !Task.isCancelled, renderGeneration == generation else {
+                    return
+                }
+
+                renderTask = nil
+                lastRenderSignature = nil
+                setStatus(.error(error.localizedDescription))
+            }
+        }
+    }
+
+    private func defaultRenderer() -> HueAmbienceRendering? {
+        guard let bridge = store.bridge else {
+            return nil
+        }
+
+        return HueAmbienceRenderer(lightClient: HueBridgeClient(bridge: bridge))
+    }
+
+    private func resetRenderState() {
+        renderTask?.cancel()
+        renderTask = nil
+        lastRenderSignature = nil
+        renderGeneration += 1
+    }
+}
+
+private struct RenderSignature: Equatable {
+    var trackKey: String
+    var palette: [HueRGBColor]
+    var targets: [HueResolvedAmbienceTarget]
 }
