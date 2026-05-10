@@ -313,6 +313,38 @@ struct HueAreaResource: Codable, Equatable, Identifiable, Sendable {
     var name: String
     var kind: Kind
     var childLightIDs: [String]
+    var childDeviceIDs: [String]
+
+    init(
+        id: String,
+        name: String,
+        kind: Kind,
+        childLightIDs: [String],
+        childDeviceIDs: [String] = []
+    ) {
+        self.id = id
+        self.name = name
+        self.kind = kind
+        self.childLightIDs = childLightIDs
+        self.childDeviceIDs = childDeviceIDs
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case name
+        case kind
+        case childLightIDs
+        case childDeviceIDs
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        name = try container.decode(String.self, forKey: .name)
+        kind = try container.decode(Kind.self, forKey: .kind)
+        childLightIDs = try container.decode([String].self, forKey: .childLightIDs)
+        childDeviceIDs = try container.decodeIfPresent([String].self, forKey: .childDeviceIDs) ?? []
+    }
 
     var ambienceTarget: HueAmbienceTarget {
         switch kind {

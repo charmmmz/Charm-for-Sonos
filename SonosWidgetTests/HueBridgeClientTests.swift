@@ -101,6 +101,11 @@ final class HueBridgeClientTests: XCTestCase {
               ]
             }
             """,
+            "GET /clip/v2/resource/device": """
+            {
+              "data": []
+            }
+            """,
             "GET /clip/v2/resource/room": """
             {
               "data": [
@@ -205,6 +210,11 @@ final class HueBridgeClientTests: XCTestCase {
               ]
             }
             """,
+            "GET /clip/v2/resource/device": """
+            {
+              "data": []
+            }
+            """,
             "GET /clip/v2/resource/room": """
             {
               "data": []
@@ -281,6 +291,11 @@ final class HueBridgeClientTests: XCTestCase {
               ]
             }
             """,
+            "GET /clip/v2/resource/device": """
+            {
+              "data": []
+            }
+            """,
             "GET /clip/v2/resource/room": """
             {
               "data": [
@@ -336,6 +351,103 @@ final class HueBridgeClientTests: XCTestCase {
         XCTAssertEqual(zone?.childLightIDs, ["light-1"])
     }
 
+    func testFetchResourcesResolvesRoomDeviceChildrenWithoutUsingLightNames() async throws {
+        let transport = MockHueTransport(responses: [
+            "GET /clip/v2/resource/light": """
+            {
+              "data": [
+                {
+                  "id": "study-lamp",
+                  "metadata": {
+                    "name": "台灯"
+                  },
+                  "owner": {
+                    "rid": "study-device",
+                    "rtype": "device"
+                  },
+                  "color": {}
+                },
+                {
+                  "id": "bedroom-lamp",
+                  "metadata": {
+                    "name": "台灯"
+                  },
+                  "owner": {
+                    "rid": "bedroom-device",
+                    "rtype": "device"
+                  },
+                  "color": {}
+                }
+              ]
+            }
+            """,
+            "GET /clip/v2/resource/device": """
+            {
+              "data": [
+                {
+                  "id": "study-device",
+                  "services": [
+                    {
+                      "rid": "study-lamp",
+                      "rtype": "light"
+                    }
+                  ]
+                },
+                {
+                  "id": "bedroom-device",
+                  "services": [
+                    {
+                      "rid": "bedroom-lamp",
+                      "rtype": "light"
+                    }
+                  ]
+                }
+              ]
+            }
+            """,
+            "GET /clip/v2/resource/room": """
+            {
+              "data": [
+                {
+                  "id": "study-room",
+                  "metadata": {
+                    "name": "Study"
+                  },
+                  "children": [
+                    {
+                      "rid": "study-device",
+                      "rtype": "device"
+                    }
+                  ]
+                }
+              ]
+            }
+            """,
+            "GET /clip/v2/resource/zone": """
+            {
+              "data": []
+            }
+            """,
+            "GET /clip/v2/resource/entertainment_configuration": """
+            {
+              "data": []
+            }
+            """
+        ])
+        let client = HueBridgeClient(
+            bridge: HueBridgeInfo(id: "bridge-1", ipAddress: "192.168.1.20", name: "Home Hue"),
+            credentialStore: HueCredentialStore(storage: InMemoryHueCredentialStorage()),
+            transport: transport,
+            applicationKeyProvider: { "generated-key" }
+        )
+
+        let resources = try await client.fetchResources()
+        let room = resources.areas.first { $0.id == "study-room" }
+
+        XCTAssertEqual(room?.childLightIDs, ["study-lamp"])
+        XCTAssertEqual(room?.childDeviceIDs, ["study-device"])
+    }
+
     func testFetchResourcesDecodesLightFunctionMetadata() async throws {
         let transport = MockHueTransport(responses: [
             "GET /clip/v2/resource/light": """
@@ -373,6 +485,11 @@ final class HueBridgeClientTests: XCTestCase {
                   "color": {}
                 }
               ]
+            }
+            """,
+            "GET /clip/v2/resource/device": """
+            {
+              "data": []
             }
             """,
             "GET /clip/v2/resource/room": """

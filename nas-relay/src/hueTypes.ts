@@ -45,6 +45,7 @@ export interface HueAreaResource {
   name: string;
   kind: HueAmbienceTargetKind;
   childLightIDs: string[];
+  childDeviceIDs?: string[];
 }
 
 export interface HueBridgeResources {

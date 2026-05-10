@@ -47,6 +47,7 @@ export function resolveHueTargets(
       const lights = area.childLightIDs
         .map(id => lightsByID.get(id))
         .filter((light): light is HueLightResource => Boolean(light))
+        .filter(light => lightBelongsToAreaDevice(light, area))
         .filter(light => light.supportsColor)
         .filter(light => shouldUseLightForAmbience(light, mapping));
 
@@ -122,6 +123,12 @@ function resolveArea(
   if (!target) return undefined;
   return config.resources.areas.find(area => area.id === target.id && area.kind === target.kind)
     ?? config.resources.areas.find(area => area.id === target.id);
+}
+
+function lightBelongsToAreaDevice(light: HueLightResource, area: { childDeviceIDs?: string[] }): boolean {
+  const childDeviceIDs = area.childDeviceIDs ?? [];
+  if (childDeviceIDs.length === 0 || !light.ownerID) return true;
+  return childDeviceIDs.includes(light.ownerID);
 }
 
 function colorJSON(color: HueRGBColor): { xy: { x: number; y: number } } {

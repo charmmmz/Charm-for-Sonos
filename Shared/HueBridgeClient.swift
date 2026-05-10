@@ -341,6 +341,9 @@ struct HueBridgeClient {
         let lightEnvelope: HueV2Envelope<HueLightDTO> = try await sendAuthenticatedGET(
             path: "/clip/v2/resource/light"
         )
+        let deviceEnvelope: HueV2Envelope<HueDeviceDTO> = try await sendAuthenticatedGET(
+            path: "/clip/v2/resource/device"
+        )
         let roomEnvelope: HueV2Envelope<HueAreaDTO> = try await sendAuthenticatedGET(
             path: "/clip/v2/resource/room"
         )
@@ -352,17 +355,41 @@ struct HueBridgeClient {
         )
 
         let serviceToLightID = lightEnvelope.data.reduce(into: [String: String]()) { result, light in
+            result[light.id] = light.id
             light.services?.forEach { service in
                 result[service.rid] = light.id
             }
         }
-        let entertainmentAreas = entertainmentEnvelope.data.map {
-            $0.resource(kind: .entertainmentArea, serviceToLightID: serviceToLightID)
+        let deviceLightIDsByID = deviceEnvelope.data.reduce(into: [String: [String]]()) { result, device in
+            result[device.id] = device.lightIDs(serviceToLightID: serviceToLightID)
         }
-        let rooms = roomEnvelope.data.map { $0.resource(kind: .room) }
+        let lightDeviceIDsByID = lightEnvelope.data.reduce(into: [String: String]()) { result, light in
+            if light.owner?.rtype == "device" {
+                result[light.id] = light.owner?.rid
+            }
+        }
+        let entertainmentAreas = entertainmentEnvelope.data.map {
+            $0.resource(
+                kind: .entertainmentArea,
+                serviceToLightID: serviceToLightID,
+                lightDeviceIDsByID: lightDeviceIDsByID
+            )
+        }
+        let rooms = roomEnvelope.data.map {
+            $0.resource(
+                kind: .room,
+                deviceLightIDsByID: deviceLightIDsByID
+            )
+        }
         let roomLightIDsByID = Dictionary(uniqueKeysWithValues: rooms.map { ($0.id, $0.childLightIDs) })
+        let roomDeviceIDsByID = Dictionary(uniqueKeysWithValues: rooms.map { ($0.id, $0.childDeviceIDs) })
         let zones = zoneEnvelope.data.map {
-            $0.resource(kind: .zone, roomLightIDsByID: roomLightIDsByID)
+            $0.resource(
+                kind: .zone,
+                deviceLightIDsByID: deviceLightIDsByID,
+                roomLightIDsByID: roomLightIDsByID,
+                roomDeviceIDsByID: roomDeviceIDsByID
+            )
         }
 
         return HueBridgeResources(
@@ -542,6 +569,28 @@ private struct HueLightDTO: Decodable {
     }
 }
 
+private struct HueDeviceDTO: Decodable {
+    var id: String
+    var services: [HueResourceReferenceDTO]?
+
+    func lightIDs(serviceToLightID: [String: String]) -> [String] {
+        let lightIDs = services?.compactMap { service -> String? in
+            if service.rtype == "light" {
+                return service.rid
+            }
+
+            return serviceToLightID[service.rid]
+        } ?? []
+
+        return Self.unique(lightIDs)
+    }
+
+    private static func unique(_ values: [String]) -> [String] {
+        var seen = Set<String>()
+        return values.filter { seen.insert($0).inserted }
+    }
+}
+
 private struct HueAreaDTO: Decodable {
     var id: String
     var metadata: HueMetadataDTO?
@@ -549,35 +598,39 @@ private struct HueAreaDTO: Decodable {
 
     func resource(
         kind: HueAreaResource.Kind,
-        roomLightIDsByID: [String: [String]] = [:]
+        deviceLightIDsByID: [String: [String]] = [:],
+        roomLightIDsByID: [String: [String]] = [:],
+        roomDeviceIDsByID: [String: [String]] = [:]
     ) -> HueAreaResource {
-        var seenLightIDs = Set<String>()
-        let childLightIDs = children?
-            .flatMap { child -> [String] in
-                switch child.rtype {
-                case "light":
-                    return [child.rid]
-                case "room":
-                    return roomLightIDsByID[child.rid] ?? []
-                default:
-                    return []
-                }
+        var lightIDs: [String] = []
+        var deviceIDs: [String] = []
+        children?.forEach { child in
+            switch child.rtype {
+            case "light":
+                lightIDs.append(child.rid)
+            case "device":
+                deviceIDs.append(child.rid)
+                lightIDs.append(contentsOf: deviceLightIDsByID[child.rid] ?? [])
+            case "room":
+                lightIDs.append(contentsOf: roomLightIDsByID[child.rid] ?? [])
+                deviceIDs.append(contentsOf: roomDeviceIDsByID[child.rid] ?? [])
+            default:
+                break
             }
-            .filter { lightID in
-                guard !seenLightIDs.contains(lightID) else {
-                    return false
-                }
-
-                seenLightIDs.insert(lightID)
-                return true
-            } ?? []
+        }
 
         return HueAreaResource(
             id: id,
             name: metadata?.name ?? id,
             kind: kind,
-            childLightIDs: childLightIDs
+            childLightIDs: Self.unique(lightIDs),
+            childDeviceIDs: Self.unique(deviceIDs)
         )
+    }
+
+    private static func unique(_ values: [String]) -> [String] {
+        var seen = Set<String>()
+        return values.filter { seen.insert($0).inserted }
     }
 }
 
@@ -596,35 +649,35 @@ private struct HueEntertainmentConfigurationDTO: Decodable {
 
     func resource(
         kind: HueAreaResource.Kind,
-        serviceToLightID: [String: String] = [:]
+        serviceToLightID: [String: String] = [:],
+        lightDeviceIDsByID: [String: String] = [:]
     ) -> HueAreaResource {
-        var seenLightIDs = Set<String>()
         let channelServices = channels?
             .flatMap { $0.members ?? [] }
             .compactMap(\.service) ?? []
         let serviceReferences = (lightServices ?? []) + channelServices
         let lightIDs = serviceReferences.compactMap { service -> String? in
-            let lightID: String?
             if service.rtype == "light" {
-                lightID = service.rid
-            } else {
-                lightID = serviceToLightID[service.rid]
+                return service.rid
             }
 
-            guard let lightID, !seenLightIDs.contains(lightID) else {
-                return nil
-            }
-
-            seenLightIDs.insert(lightID)
-            return lightID
+            return serviceToLightID[service.rid]
         }
+        let uniqueLightIDs = Self.unique(lightIDs)
+        let deviceIDs = uniqueLightIDs.compactMap { lightDeviceIDsByID[$0] }
 
         return HueAreaResource(
             id: id,
             name: metadata?.name ?? id,
             kind: kind,
-            childLightIDs: lightIDs
+            childLightIDs: uniqueLightIDs,
+            childDeviceIDs: Self.unique(deviceIDs)
         )
+    }
+
+    private static func unique(_ values: [String]) -> [String] {
+        var seen = Set<String>()
+        return values.filter { seen.insert($0).inserted }
     }
 }
 

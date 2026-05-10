@@ -95,6 +95,72 @@ test('target resolution matches relay group id and keeps exclusions winning over
   assert.deepEqual(targets[0]!.lights.map(l => l.id), ['decor-gradient', 'old-cache']);
 });
 
+test('target resolution scopes duplicate named lights to area devices', () => {
+  const duplicateNameConfig: HueAmbienceRuntimeConfig = {
+    ...config,
+    resources: {
+      lights: [
+        {
+          id: 'study-lamp',
+          name: '台灯',
+          ownerID: 'study-device',
+          supportsColor: true,
+          supportsGradient: false,
+          supportsEntertainment: true,
+          function: 'decorative',
+          functionMetadataResolved: true,
+        },
+        {
+          id: 'bedroom-lamp',
+          name: '台灯',
+          ownerID: 'bedroom-device',
+          supportsColor: true,
+          supportsGradient: false,
+          supportsEntertainment: true,
+          function: 'decorative',
+          functionMetadataResolved: true,
+        },
+      ],
+      areas: [
+        {
+          id: 'room-1',
+          name: 'Study',
+          kind: 'room',
+          childLightIDs: ['study-lamp', 'bedroom-lamp'],
+          childDeviceIDs: ['study-device'],
+        },
+      ],
+    },
+    mappings: [
+      {
+        sonosID: 'study',
+        sonosName: 'Study',
+        relayGroupID: '192.168.50.25',
+        preferredTarget: { kind: 'room', id: 'room-1' },
+        fallbackTarget: null,
+        includedLightIDs: [],
+        excludedLightIDs: [],
+        capability: 'basic',
+      },
+    ],
+  };
+
+  const targets = resolveHueTargets(duplicateNameConfig, {
+    groupId: '192.168.50.25',
+    speakerName: 'Study',
+    trackTitle: 'A',
+    artist: 'B',
+    album: 'C',
+    isPlaying: true,
+    positionSeconds: 1,
+    durationSeconds: 120,
+    groupMemberCount: 1,
+    sampledAt: new Date('2026-05-11T00:00:00Z'),
+  });
+
+  assert.deepEqual(targets[0]!.lights.map(l => l.id), ['study-lamp']);
+});
+
 test('gradient lights receive multi-point palette bodies while basic lights receive one xy color', () => {
   const palette = [
     { r: 1, g: 0.1, b: 0.1 },

@@ -569,6 +569,49 @@ final class MusicAmbienceManagerTests: XCTestCase {
         XCTAssertEqual(targets.first?.lightIDs, ["task"])
     }
 
+    func testStoredResolverScopesDuplicateNamedLightsToAreaDevices() {
+        let resolver = StoredHueTargetResolver(
+            areas: [
+                HueAreaResource(
+                    id: "room-1",
+                    name: "Study",
+                    kind: .room,
+                    childLightIDs: ["study-lamp", "bedroom-lamp"],
+                    childDeviceIDs: ["study-device"]
+                )
+            ],
+            lights: [
+                HueLightResource(
+                    id: "study-lamp",
+                    name: "台灯",
+                    ownerID: "study-device",
+                    supportsColor: true,
+                    supportsGradient: false,
+                    supportsEntertainment: true,
+                    function: .decorative
+                ),
+                HueLightResource(
+                    id: "bedroom-lamp",
+                    name: "台灯",
+                    ownerID: "bedroom-device",
+                    supportsColor: true,
+                    supportsGradient: false,
+                    supportsEntertainment: true,
+                    function: .decorative
+                )
+            ]
+        )
+        let mapping = HueSonosMapping(
+            sonosID: "study",
+            sonosName: "Study",
+            preferredTarget: .room("room-1")
+        )
+
+        let targets = resolver.resolveTargets(for: [mapping])
+
+        XCTAssertEqual(targets.first?.lightIDs, ["study-lamp"])
+    }
+
     private func makeTarget() -> HueResolvedAmbienceTarget {
         HueResolvedAmbienceTarget(
             areaID: "room-1",

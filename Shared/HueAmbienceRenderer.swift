@@ -38,6 +38,9 @@ struct StoredHueTargetResolver: HueTargetResolving {
                           let light = lightsByID[lightID] else {
                         return false
                     }
+                    guard Self.area(area, contains: light) else {
+                        return false
+                    }
 
                     return light.participatesInAmbienceByDefault
                         || mapping.includedLightIDs.contains(lightID)
@@ -58,6 +61,15 @@ struct StoredHueTargetResolver: HueTargetResolving {
 
             return nil
         }
+    }
+
+    private static func area(_ area: HueAreaResource, contains light: HueLightResource) -> Bool {
+        guard !area.childDeviceIDs.isEmpty,
+              let ownerID = light.ownerID else {
+            return true
+        }
+
+        return area.childDeviceIDs.contains(ownerID)
     }
 
     private func area(for target: HueAmbienceTarget) -> HueAreaResource? {

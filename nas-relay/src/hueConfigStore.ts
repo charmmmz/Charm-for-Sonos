@@ -73,7 +73,11 @@ function normalizeConfig(config: HueAmbienceRuntimeConfig): HueAmbienceRuntimeCo
     enabled: config.enabled && (process.env.HUE_AMBIENCE_ENABLED ?? 'true') !== 'false',
     resources: {
       lights: config.resources?.lights ?? [],
-      areas: config.resources?.areas ?? [],
+      areas: (config.resources?.areas ?? []).map(area => ({
+        ...area,
+        childLightIDs: area.childLightIDs ?? [],
+        childDeviceIDs: area.childDeviceIDs ?? [],
+      })),
     },
     mappings: (config.mappings ?? []).map(mapping => ({
       ...mapping,
