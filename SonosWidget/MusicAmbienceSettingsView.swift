@@ -298,18 +298,16 @@ private struct HueAmbienceSetupSheet: View {
         isBusy = true
         defer { isBusy = false }
 
-        do {
-            let bridges = try await HueBridgeDiscovery.discoverViaBroker()
-            discoveredBridges = bridges
-            if let bridge = store.bridge {
-                mergeDiscoveredBridge(bridge)
-            }
-            selectedBridgeID = selectedBridgeID.isEmpty ? bridges.first?.id ?? "" : selectedBridgeID
-            if discoveredBridges.isEmpty {
-                setupError = "No Hue Bridge was found. Try manual pairing with the Bridge IP."
-            }
-        } catch {
-            setupError = error.localizedDescription
+        let bridges = await HueBridgeDiscovery.discoverLocal()
+        discoveredBridges = bridges
+        if let bridge = store.bridge {
+            mergeDiscoveredBridge(bridge)
+        }
+        selectedBridgeID = selectedBridgeID.isEmpty ? discoveredBridges.first?.id ?? "" : selectedBridgeID
+        if discoveredBridges.isEmpty {
+            setupError = "No Hue Bridge was found on this local network. " +
+                "Make sure Local Network access is allowed and this iPhone is on the same Wi-Fi as the Bridge, " +
+                "or pair manually with the Bridge IP."
         }
     }
 

@@ -3,20 +3,39 @@ import XCTest
 @testable import SonosWidget
 
 final class HueBridgeClientTests: XCTestCase {
-    func testDiscoveryResponseDecodesBridgeIPAndID() throws {
-        let data = Data("""
-        [
-          {
-            "id": "001788fffe123456",
-            "internalipaddress": "192.168.1.20",
-            "port": 443
-          }
-        ]
-        """.utf8)
+    func testLocalDiscoveryBuildsBridgeInfoFromBonjourRecords() async {
+        let browser = StubHueLocalBridgeBrowser(records: [
+            HueLocalBridgeRecord(
+                name: "Philips hue - 001788fffe123456",
+                hostName: "Philips-hue.local.",
+                ipAddresses: ["192.168.1.20"]
+            )
+        ])
 
-        let bridges = try HueBridgeDiscoveryResult.decode(data)
+        let bridges = await HueBridgeDiscovery.discoverLocal(browser: browser, timeout: 0.1)
 
-        XCTAssertEqual(bridges.first?.id, "001788fffe123456")
+        XCTAssertEqual(bridges, [
+            HueBridgeInfo(id: "001788fffe123456", ipAddress: "192.168.1.20", name: "Philips hue")
+        ])
+    }
+
+    func testLocalDiscoveryDeduplicatesBridgeRecordsByIPAddress() async {
+        let browser = StubHueLocalBridgeBrowser(records: [
+            HueLocalBridgeRecord(
+                name: "Philips hue - 001788fffe123456",
+                hostName: "Philips-hue.local.",
+                ipAddresses: ["192.168.1.20"]
+            ),
+            HueLocalBridgeRecord(
+                name: "Hue Bridge Duplicate",
+                hostName: nil,
+                ipAddresses: ["192.168.1.20"]
+            )
+        ])
+
+        let bridges = await HueBridgeDiscovery.discoverLocal(browser: browser, timeout: 0.1)
+
+        XCTAssertEqual(bridges.count, 1)
         XCTAssertEqual(bridges.first?.ipAddress, "192.168.1.20")
     }
 
@@ -357,6 +376,14 @@ final class HueBridgeClientTests: XCTestCase {
         } catch HueBridgeError.linkButtonNotPressed {
             XCTAssertEqual(transport.requests.count, 1)
         }
+    }
+}
+
+private struct StubHueLocalBridgeBrowser: HueLocalBridgeBrowsing {
+    var records: [HueLocalBridgeRecord]
+
+    func discover(timeout: TimeInterval) async -> [HueLocalBridgeRecord] {
+        records
     }
 }
 

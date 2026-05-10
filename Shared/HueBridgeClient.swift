@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 import Security
 
 struct HueBridgeRequest: Equatable, Sendable {
@@ -121,32 +122,162 @@ struct HueBridgeResources: Codable, Equatable, Sendable {
     static let empty = HueBridgeResources(lights: [], areas: [])
 }
 
-struct HueBridgeDiscoveryResult: Decodable, Equatable, Sendable {
-    let id: String
-    let internalipaddress: String
-    let port: Int?
+struct HueLocalBridgeRecord: Equatable, Sendable {
+    var name: String
+    var hostName: String?
+    var ipAddresses: [String]
+}
 
-    var ipAddress: String {
-        internalipaddress
+@MainActor
+protocol HueLocalBridgeBrowsing {
+    func discover(timeout: TimeInterval) async -> [HueLocalBridgeRecord]
+}
+
+@MainActor
+final class NetServiceHueLocalBridgeBrowser: NSObject, HueLocalBridgeBrowsing {
+    private var browser: NetServiceBrowser?
+    private var services: [NetService] = []
+    private var records: [HueLocalBridgeRecord] = []
+    private var continuation: CheckedContinuation<[HueLocalBridgeRecord], Never>?
+    private var isFinished = false
+
+    func discover(timeout: TimeInterval) async -> [HueLocalBridgeRecord] {
+        await withCheckedContinuation { continuation in
+            self.continuation = continuation
+            self.isFinished = false
+            self.records = []
+            self.services = []
+
+            let browser = NetServiceBrowser()
+            browser.delegate = self
+            self.browser = browser
+            browser.searchForServices(ofType: "_hue._tcp.", inDomain: "local.")
+
+            DispatchQueue.main.asyncAfter(deadline: .now() + timeout) { [weak self] in
+                self?.finish()
+            }
+        }
     }
 
-    static func decode(_ data: Data) throws -> [HueBridgeDiscoveryResult] {
-        try JSONDecoder().decode([HueBridgeDiscoveryResult].self, from: data)
+    private func finish() {
+        guard !isFinished else {
+            return
+        }
+
+        isFinished = true
+        browser?.stop()
+        services.forEach { $0.stop() }
+        continuation?.resume(returning: records)
+        continuation = nil
+        browser = nil
+        services = []
+    }
+}
+
+extension NetServiceHueLocalBridgeBrowser: NetServiceBrowserDelegate, NetServiceDelegate {
+    func netServiceBrowser(_ browser: NetServiceBrowser, didFind service: NetService, moreComing: Bool) {
+        services.append(service)
+        service.delegate = self
+        service.resolve(withTimeout: 2)
+    }
+
+    func netServiceBrowser(_ browser: NetServiceBrowser, didNotSearch errorDict: [String: NSNumber]) {
+        finish()
+    }
+
+    func netServiceDidResolveAddress(_ sender: NetService) {
+        let record = HueLocalBridgeRecord(
+            name: sender.name,
+            hostName: sender.hostName,
+            ipAddresses: sender.ipv4Addresses
+        )
+        if !record.ipAddresses.isEmpty {
+            records.append(record)
+        }
+    }
+}
+
+private extension NetService {
+    nonisolated var ipv4Addresses: [String] {
+        addresses?.compactMap(Self.ipv4Address(from:)) ?? []
+    }
+
+    nonisolated static func ipv4Address(from data: Data) -> String? {
+        data.withUnsafeBytes { rawBuffer -> String? in
+            guard let baseAddress = rawBuffer.baseAddress else {
+                return nil
+            }
+
+            let socketAddress = baseAddress.assumingMemoryBound(to: sockaddr.self)
+            guard socketAddress.pointee.sa_family == sa_family_t(AF_INET) else {
+                return nil
+            }
+
+            var internetAddress = baseAddress
+                .assumingMemoryBound(to: sockaddr_in.self)
+                .pointee
+                .sin_addr
+            var buffer = [CChar](repeating: 0, count: Int(INET_ADDRSTRLEN))
+            guard let cString = inet_ntop(AF_INET, &internetAddress, &buffer, socklen_t(INET_ADDRSTRLEN)) else {
+                return nil
+            }
+
+            return String(cString: cString)
+        }
     }
 }
 
 enum HueBridgeDiscovery {
-    static func discoverViaBroker(session: URLSession = .shared) async throws -> [HueBridgeInfo] {
-        let url = URL(string: "https://discovery.meethue.com/")!
-        let (data, response) = try await session.data(from: url)
-        if let httpResponse = response as? HTTPURLResponse,
-           !(200 ... 299).contains(httpResponse.statusCode) {
-            throw HueBridgeError.httpStatus(httpResponse.statusCode)
+    @MainActor
+    static func discoverLocal(
+        browser: HueLocalBridgeBrowsing? = nil,
+        timeout: TimeInterval = 4
+    ) async -> [HueBridgeInfo] {
+        let browser = browser ?? NetServiceHueLocalBridgeBrowser()
+        let records = await browser.discover(timeout: timeout)
+        return bridgeInfos(fromLocalRecords: records)
+    }
+
+    static func bridgeInfos(fromLocalRecords records: [HueLocalBridgeRecord]) -> [HueBridgeInfo] {
+        var seenIPs = Set<String>()
+        return records.compactMap { record in
+            guard let ipAddress = record.ipAddresses.first,
+                  seenIPs.insert(ipAddress).inserted else {
+                return nil
+            }
+
+            return HueBridgeInfo(
+                id: localBridgeID(from: record, ipAddress: ipAddress),
+                ipAddress: ipAddress,
+                name: localBridgeName(from: record)
+            )
+        }
+    }
+
+    private static func localBridgeID(from record: HueLocalBridgeRecord, ipAddress: String) -> String {
+        let normalizedName = record.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lowercasedName = normalizedName.lowercased()
+        if lowercasedName.hasPrefix("philips hue - ") {
+            return String(normalizedName.dropFirst("Philips hue - ".count))
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased()
         }
 
-        return try HueBridgeDiscoveryResult.decode(data).map {
-            HueBridgeInfo(id: $0.id, ipAddress: $0.ipAddress, name: "Hue Bridge")
+        if let hostName = record.hostName?.trimmingCharacters(in: CharacterSet(charactersIn: ".")),
+           !hostName.isEmpty {
+            return hostName.lowercased()
         }
+
+        return ipAddress
+    }
+
+    private static func localBridgeName(from record: HueLocalBridgeRecord) -> String {
+        let normalizedName = record.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if normalizedName.lowercased().hasPrefix("philips hue - ") {
+            return "Philips hue"
+        }
+
+        return normalizedName.isEmpty ? "Hue Bridge" : normalizedName
     }
 }
 
