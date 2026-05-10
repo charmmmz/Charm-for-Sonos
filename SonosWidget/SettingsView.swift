@@ -19,6 +19,7 @@ struct SettingsView: View {
 
     @State private var agentURLDraft: String = AgentManager.shared.urlString
     @State private var agentTokenDraft: String = AgentManager.shared.tokenString
+    @FocusState private var focusedInputField: SettingsInputField?
     @Bindable private var agent = AgentManager.shared
     @Bindable private var auth = SonosAuth.shared
     @Bindable private var hueStore = HueAmbienceStore.shared
@@ -43,8 +44,17 @@ struct SettingsView: View {
                 agentSection
                 aboutSection
             }
+            .scrollDismissesKeyboard(.interactively)
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.large)
+            .toolbar {
+                ToolbarItemGroup(placement: .keyboard) {
+                    Spacer()
+                    Button("Done") {
+                        finishEditingFocusedInput()
+                    }
+                }
+            }
             .scrollContentBackground(.hidden)
             .background {
                 backgroundLayer.ignoresSafeArea()
@@ -78,6 +88,27 @@ struct SettingsView: View {
                 musicAmbienceSetupPresentation.dismiss()
             }
         }
+    }
+
+    private var inputDrafts: SettingsInputDrafts {
+        SettingsInputDrafts(
+            relayURL: relayURLDraft,
+            agentURL: agentURLDraft,
+            agentToken: agentTokenDraft
+        )
+    }
+
+    private func finishEditingFocusedInput() {
+        finishEditingInput(focusedInputField)
+    }
+
+    private func finishEditingInput(_ field: SettingsInputField?) {
+        focusedInputField = inputDrafts.commit(
+            focusedField: field,
+            relayURL: { relay.setURL($0) },
+            agentURL: { agent.setURL($0) },
+            agentToken: { agent.setToken($0) }
+        )
     }
 
     // MARK: - Background
@@ -381,15 +412,14 @@ struct SettingsView: View {
     @ViewBuilder
     private var relaySection: some View {
         Section {
-            TextField("http://192.168.50.10:8787",
-                      text: $relayURLDraft,
-                      axis: .vertical)
+            TextField("http://192.168.50.10:8787", text: $relayURLDraft)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
                 .keyboardType(.URL)
                 .submitLabel(.done)
+                .focused($focusedInputField, equals: .relayURL)
                 .onSubmit {
-                    relay.setURL(relayURLDraft)
+                    finishEditingInput(.relayURL)
                 }
 
             relayStatusRow
@@ -397,9 +427,9 @@ struct SettingsView: View {
             Button {
                 // Commit any pending edits (in case the user typed but didn't
                 // press return) and force an immediate probe.
-                if relay.urlString != relayURLDraft {
-                    relay.setURL(relayURLDraft)
-                } else {
+                let urlChanged = relay.urlString != relayURLDraft
+                finishEditingInput(.relayURL)
+                if !urlChanged {
                     Task { await relay.probeNow() }
                 }
             } label: {
@@ -478,34 +508,30 @@ struct SettingsView: View {
     @ViewBuilder
     private var agentSection: some View {
         Section {
-            TextField("http://192.168.50.10:8790",
-                      text: $agentURLDraft,
-                      axis: .vertical)
+            TextField("http://192.168.50.10:8790", text: $agentURLDraft)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
                 .keyboardType(.URL)
                 .submitLabel(.done)
+                .focused($focusedInputField, equals: .agentURL)
                 .onSubmit {
-                    agent.setURL(agentURLDraft)
+                    finishEditingInput(.agentURL)
                 }
 
             SecureField("Agent bearer token", text: $agentTokenDraft)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
                 .submitLabel(.done)
+                .focused($focusedInputField, equals: .agentToken)
                 .onSubmit {
-                    agent.setToken(agentTokenDraft)
+                    finishEditingInput(.agentToken)
                 }
 
             agentStatusRow
 
             Button {
-                if agent.urlString != agentURLDraft {
-                    agent.setURL(agentURLDraft)
-                }
-                if agent.tokenString != agentTokenDraft {
-                    agent.setToken(agentTokenDraft)
-                }
+                finishEditingInput(.agentURL)
+                finishEditingInput(.agentToken)
                 Task { await agent.probeNow() }
             } label: {
                 Label("Test Agent Connection", systemImage: "bolt.horizontal.circle")
