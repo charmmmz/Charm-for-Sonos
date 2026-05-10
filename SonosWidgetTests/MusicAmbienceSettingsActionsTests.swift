@@ -36,6 +36,32 @@ final class MusicAmbienceSettingsActionsTests: XCTestCase {
         XCTAssertEqual(pushCount, 0)
     }
 
+    func testSyncableSettingChangePushesToRelayWhenReady() async {
+        var pushCount = 0
+        let actions = MusicAmbienceSettingsSyncActions(
+            refreshStatus: {},
+            canSyncToRelay: { true },
+            syncToRelay: { pushCount += 1 }
+        )
+
+        await actions.syncableSettingChanged()
+
+        XCTAssertEqual(pushCount, 1)
+    }
+
+    func testSyncableSettingChangeSkipsRelayPushWhenRelayIsNotReady() async {
+        var pushCount = 0
+        let actions = MusicAmbienceSettingsSyncActions(
+            refreshStatus: {},
+            canSyncToRelay: { false },
+            syncToRelay: { pushCount += 1 }
+        )
+
+        await actions.syncableSettingChanged()
+
+        XCTAssertEqual(pushCount, 0)
+    }
+
     private func makeDefaults() -> UserDefaults {
         let suiteName = "MusicAmbienceSettingsActionsTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
