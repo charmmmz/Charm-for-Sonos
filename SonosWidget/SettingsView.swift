@@ -21,6 +21,8 @@ struct SettingsView: View {
     @State private var agentTokenDraft: String = AgentManager.shared.tokenString
     @Bindable private var agent = AgentManager.shared
     @Bindable private var auth = SonosAuth.shared
+    @Bindable private var hueStore = HueAmbienceStore.shared
+    @Bindable private var musicAmbience = MusicAmbienceManager.shared
 
     var body: some View {
         NavigationStack {
@@ -28,6 +30,11 @@ struct SettingsView: View {
                 sonosAccountSection
                 speakersSection
                 musicServicesSection
+                MusicAmbienceSettingsView(
+                    store: hueStore,
+                    manager: musicAmbience,
+                    sonosSpeakers: displayedSpeakers
+                )
                 relaySection
                 agentSection
                 aboutSection
@@ -45,6 +52,7 @@ struct SettingsView: View {
                 agentTokenDraft = agent.tokenString
                 Task { await relay.probeNow() }
                 Task { await agent.probeNow() }
+                musicAmbience.refreshStatus()
             }
         }
     }

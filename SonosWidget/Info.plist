@@ -38,10 +38,11 @@
 	<key>NSAppleMusicUsageDescription</key>
 	<string>Charm Player reads the Apple Music track currently playing on this iPhone so it can transfer playback to your selected Sonos speaker.</string>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>Charm Player needs to access your local network to discover and control Sonos speakers.</string>
+	<string>Charm Player needs to access your local network to discover and control Sonos speakers and your Hue Bridge.</string>
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_sonos._tcp</string>
+		<string>_hue._tcp</string>
 	</array>
 	<key>NSAppTransportSecurity</key>
 	<dict>
