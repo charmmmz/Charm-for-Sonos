@@ -16,13 +16,17 @@ import type {
 
 type HuePaletteProvider = (snapshot: HueSnapshot) => Promise<HueRGBColor[]> | HueRGBColor[];
 
+const DEFAULT_STOP_GRACE_MS = 1_500;
+
 export class HueAmbienceService {
   private config: HueAmbienceRuntimeConfig | null = null;
   private activeTimer: NodeJS.Timeout | null = null;
+  private stopTimer: NodeJS.Timeout | null = null;
   private activeTargets: HueResolvedAmbienceTarget[] = [];
   private activeTrackKey: string | null = null;
   private activeGroupId: string | null = null;
   private lastError: string | null = null;
+  private runID = 0;
 
   constructor(
     private readonly store: HueAmbienceConfigStore,
@@ -30,6 +34,7 @@ export class HueAmbienceService {
     private readonly clientFactory: (config: HueAmbienceRuntimeConfig) => HueLightClient = config =>
       new HueClipClient(config.bridge, config.applicationKey),
     private readonly paletteProvider: HuePaletteProvider = paletteForSnapshot,
+    private readonly stopGraceMs = DEFAULT_STOP_GRACE_MS,
   ) {}
 
   async load(): Promise<void> {
@@ -37,6 +42,8 @@ export class HueAmbienceService {
   }
 
   async saveConfig(config: HueAmbienceRuntimeConfig): Promise<void> {
+    this.cancelScheduledStop();
+    this.cancelPendingWork();
     await this.stopActive();
     await this.store.save(config);
     this.config = this.store.current;
@@ -44,6 +51,8 @@ export class HueAmbienceService {
   }
 
   async clearConfig(): Promise<void> {
+    this.cancelScheduledStop();
+    this.cancelPendingWork();
     await this.stopActive();
     await this.store.clear();
     this.config = null;
@@ -51,6 +60,8 @@ export class HueAmbienceService {
   }
 
   async stop(): Promise<void> {
+    this.cancelScheduledStop();
+    this.cancelPendingWork();
     await this.stopActive();
   }
 
@@ -67,18 +78,22 @@ export class HueAmbienceService {
   receiveSnapshot(snapshot: HueSnapshot): void {
     const config = this.config;
     if (!config || !config.enabled) {
+      this.cancelScheduledStop();
+      this.cancelPendingWork();
       void this.stopActive();
       return;
     }
 
     if (!snapshot.isPlaying) {
-      void this.stopActive();
+      this.scheduleStopActive();
       return;
     }
 
+    this.cancelScheduledStop();
+
     const targets = resolveHueTargets(config, snapshot);
     if (targets.length === 0) {
-      void this.stopActive();
+      this.scheduleStopActive();
       this.lastError = 'No Hue area mapped for the active Sonos group';
       return;
     }
@@ -94,7 +109,8 @@ export class HueAmbienceService {
       return;
     }
 
-    void this.startForSnapshot(config, snapshot, targets, trackKey);
+    const runID = this.cancelPendingWork();
+    void this.startForSnapshot(config, snapshot, targets, trackKey, runID);
   }
 
   private async startForSnapshot(
@@ -102,8 +118,11 @@ export class HueAmbienceService {
     snapshot: HueSnapshot,
     targets: HueResolvedAmbienceTarget[],
     trackKey: string,
+    runID: number,
   ): Promise<void> {
     await this.stopActive(false);
+    if (!this.isCurrentRun(runID)) return;
+
     this.activeTargets = targets;
     this.activeTrackKey = trackKey;
     this.activeGroupId = snapshot.groupId;
@@ -111,10 +130,13 @@ export class HueAmbienceService {
 
     const client = this.clientFactory(config);
     const palette = await this.paletteProvider(snapshot);
+    if (!this.isCurrentRun(runID)) return;
+
     const intervalSeconds = Math.max(config.flowIntervalSeconds, 1);
 
     let step = 0;
     const apply = async () => {
+      if (!this.isCurrentRun(runID)) return;
       try {
         const nextPalette = config.motionStyle === 'flowing'
           ? rotatePalette(palette, step)
@@ -128,6 +150,8 @@ export class HueAmbienceService {
     };
 
     await apply();
+    if (!this.isCurrentRun(runID)) return;
+
     if (config.motionStyle === 'flowing' && palette.length > 1) {
       this.activeTimer = setInterval(() => {
         void apply();
@@ -157,5 +181,35 @@ export class HueAmbienceService {
       this.lastError = err instanceof Error ? err.message : String(err);
       this.log.warn({ err }, 'Hue ambience stop failed');
     }
+  }
+
+  private scheduleStopActive(): void {
+    this.cancelPendingWork();
+    this.cancelScheduledStop();
+
+    if (this.stopGraceMs <= 0) {
+      void this.stopActive();
+      return;
+    }
+
+    this.stopTimer = setTimeout(() => {
+      this.stopTimer = null;
+      void this.stopActive();
+    }, this.stopGraceMs);
+  }
+
+  private cancelPendingWork(): number {
+    this.runID += 1;
+    return this.runID;
+  }
+
+  private isCurrentRun(runID: number): boolean {
+    return runID === this.runID;
+  }
+
+  private cancelScheduledStop(): void {
+    if (!this.stopTimer) return;
+    clearTimeout(this.stopTimer);
+    this.stopTimer = null;
   }
 }
