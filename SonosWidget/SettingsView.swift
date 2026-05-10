@@ -23,6 +23,7 @@ struct SettingsView: View {
     @Bindable private var auth = SonosAuth.shared
     @Bindable private var hueStore = HueAmbienceStore.shared
     @Bindable private var musicAmbience = MusicAmbienceManager.shared
+    @State private var musicAmbienceSetupPresentation = MusicAmbienceSetupPresentationState()
 
     var body: some View {
         NavigationStack {
@@ -33,7 +34,10 @@ struct SettingsView: View {
                 MusicAmbienceSettingsView(
                     store: hueStore,
                     manager: musicAmbience,
-                    sonosSpeakers: displayedSpeakers
+                    sonosSpeakers: displayedSpeakers,
+                    presentSetup: {
+                        musicAmbienceSetupPresentation.present()
+                    }
                 )
                 relaySection
                 agentSection
@@ -53,6 +57,25 @@ struct SettingsView: View {
                 Task { await relay.probeNow() }
                 Task { await agent.probeNow() }
                 musicAmbience.refreshStatus()
+            }
+        }
+        .sheet(isPresented: musicAmbienceSetupBinding) {
+            HueAmbienceSetupSheet(
+                store: hueStore,
+                manager: musicAmbience,
+                sonosSpeakers: displayedSpeakers
+            )
+        }
+    }
+
+    private var musicAmbienceSetupBinding: Binding<Bool> {
+        Binding {
+            musicAmbienceSetupPresentation.isPresented
+        } set: { isPresented in
+            if isPresented {
+                musicAmbienceSetupPresentation.present()
+            } else {
+                musicAmbienceSetupPresentation.dismiss()
             }
         }
     }

@@ -1,11 +1,22 @@
 import SwiftUI
 
+struct MusicAmbienceSetupPresentationState: Equatable {
+    var isPresented = false
+
+    mutating func present() {
+        isPresented = true
+    }
+
+    mutating func dismiss() {
+        isPresented = false
+    }
+}
+
 struct MusicAmbienceSettingsView: View {
     @Bindable var store: HueAmbienceStore
     @Bindable var manager: MusicAmbienceManager
     let sonosSpeakers: [SonosPlayer]
-
-    @State private var showingSetup = false
+    let presentSetup: () -> Void
 
     var body: some View {
         Section {
@@ -15,7 +26,7 @@ struct MusicAmbienceSettingsView: View {
                 .disabled(store.bridge == nil || store.mappings.isEmpty)
 
             Button {
-                showingSetup = true
+                presentSetup()
             } label: {
                 Label(
                     store.bridge == nil ? "Set Up Hue Bridge" : "Edit Hue Assignments",
@@ -40,13 +51,6 @@ struct MusicAmbienceSettingsView: View {
             Text("Hue Music Ambience")
         } footer: {
             Text("Uses album artwork colors for Hue ambience. Without a NAS, continuous background syncing is limited by iOS.")
-        }
-        .sheet(isPresented: $showingSetup) {
-            HueAmbienceSetupSheet(
-                store: store,
-                manager: manager,
-                sonosSpeakers: sonosSpeakers
-            )
         }
         .onChange(of: store.isEnabled) {
             manager.refreshStatus()
@@ -106,7 +110,7 @@ struct MusicAmbienceSettingsView: View {
     }
 }
 
-private struct HueAmbienceSetupSheet: View {
+struct HueAmbienceSetupSheet: View {
     @Bindable var store: HueAmbienceStore
     @Bindable var manager: MusicAmbienceManager
     let sonosSpeakers: [SonosPlayer]

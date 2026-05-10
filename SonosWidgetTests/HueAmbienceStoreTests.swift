@@ -37,6 +37,19 @@ final class HueAmbienceStoreTests: XCTestCase {
         )
     }
 
+    func testSetupPresentationStateOnlyDismissesExplicitly() {
+        var presentation = MusicAmbienceSetupPresentationState()
+
+        presentation.present()
+        let presentationAfterParentRefresh = presentation
+
+        XCTAssertTrue(presentationAfterParentRefresh.isPresented)
+
+        presentation.dismiss()
+
+        XCTAssertFalse(presentation.isPresented)
+    }
+
     func testStorePersistsStopBehavior() {
         let suiteName = "HueAmbienceStoreTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
