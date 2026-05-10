@@ -105,6 +105,39 @@ test('playing snapshots cancel a pending stop before lights are turned off', asy
   }
 });
 
+test('idle snapshots from other Sonos groups do not stop the active Hue ambience group', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'hue-service-'));
+  try {
+    const store = new HueAmbienceConfigStore(dir);
+    await store.save({ ...config, stopBehavior: 'turnOff' });
+    const client = new RecordingHueLightClient();
+    const service = new HueAmbienceService(
+      store,
+      pino({ enabled: false }),
+      () => client,
+      () => [{ r: 1, g: 0, b: 0 }],
+      1,
+    );
+    await service.load();
+
+    service.receiveSnapshot(snapshot('/art-one.jpg'));
+    await waitFor(() => client.updates.length === 1);
+
+    service.receiveSnapshot({
+      ...snapshot('/other-room.jpg'),
+      groupId: '192.168.50.99',
+      speakerName: 'Move',
+      isPlaying: false,
+    });
+    await new Promise(resolve => setTimeout(resolve, 20));
+
+    assert.equal(client.updates.length, 1);
+    assert.equal(service.status().runtimeActive, true);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 const config: HueAmbienceRuntimeConfig = {
   enabled: true,
   bridge: { id: 'bridge-1', ipAddress: '192.168.50.216', name: 'Hue Bridge' },

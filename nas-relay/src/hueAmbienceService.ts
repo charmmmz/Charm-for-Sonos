@@ -85,18 +85,20 @@ export class HueAmbienceService {
     }
 
     if (!snapshot.isPlaying) {
+      if (this.snapshotIsUnrelatedToActiveGroup(snapshot)) return;
       this.scheduleStopActive();
       return;
     }
 
-    this.cancelScheduledStop();
-
     const targets = resolveHueTargets(config, snapshot);
     if (targets.length === 0) {
+      if (this.snapshotIsUnrelatedToActiveGroup(snapshot)) return;
       this.scheduleStopActive();
       this.lastError = 'No Hue area mapped for the active Sonos group';
       return;
     }
+
+    this.cancelScheduledStop();
 
     const trackKey = [
       snapshot.groupId,
@@ -211,5 +213,9 @@ export class HueAmbienceService {
     if (!this.stopTimer) return;
     clearTimeout(this.stopTimer);
     this.stopTimer = null;
+  }
+
+  private snapshotIsUnrelatedToActiveGroup(snapshot: HueSnapshot): boolean {
+    return this.activeGroupId !== null && snapshot.groupId !== this.activeGroupId;
   }
 }
