@@ -3,6 +3,23 @@ import XCTest
 @testable import SonosWidget
 
 final class HueBridgeClientTests: XCTestCase {
+    func testDiscoveryResponseDecodesBridgeIPAndID() throws {
+        let data = Data("""
+        [
+          {
+            "id": "001788fffe123456",
+            "internalipaddress": "192.168.1.20",
+            "port": 443
+          }
+        ]
+        """.utf8)
+
+        let bridges = try HueBridgeDiscoveryResult.decode(data)
+
+        XCTAssertEqual(bridges.first?.id, "001788fffe123456")
+        XCTAssertEqual(bridges.first?.ipAddress, "192.168.1.20")
+    }
+
     func testCredentialStoreSavesReadsAndDeletesApplicationKey() {
         let storage = InMemoryHueCredentialStorage()
         let store = HueCredentialStore(storage: storage)
@@ -225,6 +242,79 @@ final class HueBridgeClientTests: XCTestCase {
             kind: .entertainmentArea,
             childLightIDs: ["light-1"]
         ))
+    }
+
+    func testFetchResourcesResolvesZoneRoomChildrenToLights() async throws {
+        let transport = MockHueTransport(responses: [
+            "GET /clip/v2/resource/light": """
+            {
+              "data": [
+                {
+                  "id": "light-1",
+                  "metadata": {
+                    "name": "Gradient Strip"
+                  },
+                  "color": {},
+                  "gradient": {
+                    "points_capable": 5
+                  }
+                }
+              ]
+            }
+            """,
+            "GET /clip/v2/resource/room": """
+            {
+              "data": [
+                {
+                  "id": "room-1",
+                  "metadata": {
+                    "name": "Living Room"
+                  },
+                  "children": [
+                    {
+                      "rid": "light-1",
+                      "rtype": "light"
+                    }
+                  ]
+                }
+              ]
+            }
+            """,
+            "GET /clip/v2/resource/zone": """
+            {
+              "data": [
+                {
+                  "id": "zone-1",
+                  "metadata": {
+                    "name": "Downstairs"
+                  },
+                  "children": [
+                    {
+                      "rid": "room-1",
+                      "rtype": "room"
+                    }
+                  ]
+                }
+              ]
+            }
+            """,
+            "GET /clip/v2/resource/entertainment_configuration": """
+            {
+              "data": []
+            }
+            """
+        ])
+        let client = HueBridgeClient(
+            bridge: HueBridgeInfo(id: "bridge-1", ipAddress: "192.168.1.20", name: "Home Hue"),
+            credentialStore: HueCredentialStore(storage: InMemoryHueCredentialStorage()),
+            transport: transport,
+            applicationKeyProvider: { "generated-key" }
+        )
+
+        let resources = try await client.fetchResources()
+        let zone = resources.areas.first { $0.id == "zone-1" }
+
+        XCTAssertEqual(zone?.childLightIDs, ["light-1"])
     }
 
     func testFetchResourcesThrowsMissingApplicationKeyBeforeSendingRequest() async throws {

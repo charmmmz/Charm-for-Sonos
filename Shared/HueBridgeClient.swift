@@ -119,6 +119,35 @@ struct HueBridgeResources: Equatable, Sendable {
     var areas: [HueAreaResource]
 }
 
+struct HueBridgeDiscoveryResult: Decodable, Equatable, Sendable {
+    let id: String
+    let internalipaddress: String
+    let port: Int?
+
+    var ipAddress: String {
+        internalipaddress
+    }
+
+    static func decode(_ data: Data) throws -> [HueBridgeDiscoveryResult] {
+        try JSONDecoder().decode([HueBridgeDiscoveryResult].self, from: data)
+    }
+}
+
+enum HueBridgeDiscovery {
+    static func discoverViaBroker(session: URLSession = .shared) async throws -> [HueBridgeInfo] {
+        let url = URL(string: "https://discovery.meethue.com/")!
+        let (data, response) = try await session.data(from: url)
+        if let httpResponse = response as? HTTPURLResponse,
+           !(200 ... 299).contains(httpResponse.statusCode) {
+            throw HueBridgeError.httpStatus(httpResponse.statusCode)
+        }
+
+        return try HueBridgeDiscoveryResult.decode(data).map {
+            HueBridgeInfo(id: $0.id, ipAddress: $0.ipAddress, name: "Hue Bridge")
+        }
+    }
+}
+
 protocol HueLightUpdating {
     func updateLight(id: String, body: [String: HueJSONValue]) async throws
 }
@@ -194,7 +223,10 @@ struct HueBridgeClient {
             $0.resource(kind: .entertainmentArea, serviceToLightID: serviceToLightID)
         }
         let rooms = roomEnvelope.data.map { $0.resource(kind: .room) }
-        let zones = zoneEnvelope.data.map { $0.resource(kind: .zone) }
+        let roomLightIDsByID = Dictionary(uniqueKeysWithValues: rooms.map { ($0.id, $0.childLightIDs) })
+        let zones = zoneEnvelope.data.map {
+            $0.resource(kind: .zone, roomLightIDsByID: roomLightIDsByID)
+        }
 
         return HueBridgeResources(
             lights: lightEnvelope.data.map(\.resource),
@@ -375,12 +407,36 @@ private struct HueAreaDTO: Decodable {
     var metadata: HueMetadataDTO?
     var children: [HueResourceReferenceDTO]?
 
-    func resource(kind: HueAreaResource.Kind) -> HueAreaResource {
-        HueAreaResource(
+    func resource(
+        kind: HueAreaResource.Kind,
+        roomLightIDsByID: [String: [String]] = [:]
+    ) -> HueAreaResource {
+        var seenLightIDs = Set<String>()
+        let childLightIDs = children?
+            .flatMap { child -> [String] in
+                switch child.rtype {
+                case "light":
+                    return [child.rid]
+                case "room":
+                    return roomLightIDsByID[child.rid] ?? []
+                default:
+                    return []
+                }
+            }
+            .filter { lightID in
+                guard !seenLightIDs.contains(lightID) else {
+                    return false
+                }
+
+                seenLightIDs.insert(lightID)
+                return true
+            } ?? []
+
+        return HueAreaResource(
             id: id,
             name: metadata?.name ?? id,
             kind: kind,
-            childLightIDs: children?.compactMap { $0.rtype == "light" ? $0.rid : nil } ?? []
+            childLightIDs: childLightIDs
         )
     }
 }

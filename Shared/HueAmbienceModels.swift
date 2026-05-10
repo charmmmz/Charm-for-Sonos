@@ -122,10 +122,71 @@ struct HueAreaResource: Codable, Equatable, Identifiable, Sendable {
         case entertainmentArea
         case room
         case zone
+
+        var label: String {
+            switch self {
+            case .entertainmentArea:
+                return "Entertainment Area"
+            case .room:
+                return "Room"
+            case .zone:
+                return "Zone"
+            }
+        }
     }
 
     let id: String
     var name: String
     var kind: Kind
     var childLightIDs: [String]
+
+    var ambienceTarget: HueAmbienceTarget {
+        switch kind {
+        case .entertainmentArea:
+            return .entertainmentArea(id)
+        case .room:
+            return .room(id)
+        case .zone:
+            return .zone(id)
+        }
+    }
+}
+
+enum HueAmbienceAreaOptions {
+    static func displayAreas(from areas: [HueAreaResource]) -> [HueAreaResource] {
+        let entertainmentAreas = areas.filter { $0.kind == .entertainmentArea }
+        if !entertainmentAreas.isEmpty {
+            return entertainmentAreas
+        }
+
+        return areas.filter { $0.kind == .room || $0.kind == .zone }
+    }
+
+    static func mapping(
+        sonosID: String,
+        sonosName: String,
+        selectedArea: HueAreaResource,
+        lights: [HueLightResource]
+    ) -> HueSonosMapping {
+        HueSonosMapping(
+            sonosID: sonosID,
+            sonosName: sonosName,
+            preferredTarget: selectedArea.ambienceTarget,
+            fallbackTarget: nil,
+            capability: capability(for: selectedArea, lights: lights)
+        )
+    }
+
+    private static func capability(
+        for area: HueAreaResource,
+        lights: [HueLightResource]
+    ) -> HueAmbienceCapability {
+        if area.kind == .entertainmentArea {
+            return .liveEntertainment
+        }
+
+        let childLightIDs = Set(area.childLightIDs)
+        let hasGradientLight = lights.contains { childLightIDs.contains($0.id) && $0.supportsGradient }
+        return hasGradientLight ? .gradientReady : .basic
+    }
 }

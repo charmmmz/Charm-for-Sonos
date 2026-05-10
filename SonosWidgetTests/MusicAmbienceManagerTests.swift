@@ -110,6 +110,42 @@ final class MusicAmbienceManagerTests: XCTestCase {
         XCTAssertEqual(snapshot.albumArtImage, Data([1, 2, 3]))
     }
 
+    func testAreaOptionsPreferEntertainmentAreasOverRoomsAndZones() {
+        let areas = [
+            HueAreaResource(id: "room-1", name: "Living Room", kind: .room, childLightIDs: ["light-1"]),
+            HueAreaResource(id: "ent-1", name: "Living Sync", kind: .entertainmentArea, childLightIDs: ["light-1"]),
+            HueAreaResource(id: "zone-1", name: "Downstairs", kind: .zone, childLightIDs: ["light-2"])
+        ]
+
+        let options = HueAmbienceAreaOptions.displayAreas(from: areas)
+
+        XCTAssertEqual(options.map(\.id), ["ent-1"])
+    }
+
+    func testAreaOptionsCreateRoomMappingWithGradientCapability() {
+        let room = HueAreaResource(id: "room-1", name: "Living Room", kind: .room, childLightIDs: ["light-1"])
+        let lights = [
+            HueLightResource(
+                id: "light-1",
+                name: "Gradient Strip",
+                ownerID: "room-1",
+                supportsColor: true,
+                supportsGradient: true,
+                supportsEntertainment: true
+            )
+        ]
+
+        let mapping = HueAmbienceAreaOptions.mapping(
+            sonosID: "living",
+            sonosName: "Living",
+            selectedArea: room,
+            lights: lights
+        )
+
+        XCTAssertEqual(mapping.preferredTarget, .room("room-1"))
+        XCTAssertEqual(mapping.capability, .gradientReady)
+    }
+
     private func makeStore() -> HueAmbienceStore {
         let suiteName = "MusicAmbienceManagerTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
