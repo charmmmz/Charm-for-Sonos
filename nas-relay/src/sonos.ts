@@ -1,4 +1,4 @@
-import { SonosManager, type SonosDevice } from '@svrooij/sonos';
+import { SonosEvents, SonosManager, type SonosDevice } from '@svrooij/sonos';
 import { EventEmitter } from 'node:events';
 import type { Logger } from 'pino';
 import type { SonosGroupSnapshot } from './types.js';
@@ -131,9 +131,13 @@ export class SonosBridge extends EventEmitter {
     // fresh via PositionInfo / TransportInfo to avoid event-payload drift
     // between firmware versions.
     try {
-      device.Events.on('current-track', () => void this.refreshSnapshot(device));
-      device.Events.on('transport-state', () => void this.refreshSnapshot(device));
-      device.Events.on('group-name', () => void this.refreshSnapshot(device));
+      device.Events.on(SonosEvents.AVTransport, () => void this.refreshSnapshot(device));
+      device.Events.on(SonosEvents.CurrentTrackUri, () => void this.refreshSnapshot(device));
+      device.Events.on(SonosEvents.CurrentTrackMetadata, () => void this.refreshSnapshot(device));
+      device.Events.on(SonosEvents.CurrentTransportState, () => void this.refreshSnapshot(device));
+      device.Events.on(SonosEvents.CurrentTransportStateSimple, () => void this.refreshSnapshot(device));
+      device.Events.on(SonosEvents.PlaybackStopped, () => void this.refreshSnapshot(device));
+      device.Events.on(SonosEvents.GroupName, () => void this.refreshSnapshot(device));
     } catch (err) {
       this.log.warn({ err, device: device.Name }, 'failed to attach device events');
     }

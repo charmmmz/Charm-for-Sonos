@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
 import { test } from 'node:test';
+import { SonosEvents } from '@svrooij/sonos';
+import pino from 'pino';
 
-import { albumArtUriFromMetadata, trackMetadataFromMetadata } from './sonos.js';
+import { albumArtUriFromMetadata, SonosBridge, trackMetadataFromMetadata } from './sonos.js';
 
 test('album art extraction accepts parsed Sonos Track metadata objects', () => {
   assert.equal(
@@ -48,4 +51,34 @@ test('track metadata extraction accepts parsed Sonos Track metadata objects', ()
       albumArtUri: '/getaa?s=1&u=x-sonos-http%3ateardrop',
     },
   );
+});
+
+test('bridge refreshes snapshots when the Sonos library emits real event names', () => {
+  const bridge = new SonosBridge(pino({ enabled: false }));
+  const events = new EventEmitter();
+  const refreshedDevices: string[] = [];
+  const device = { Name: 'Office', Events: events };
+
+  (bridge as unknown as { refreshSnapshot: (device: unknown) => Promise<void> }).refreshSnapshot = async refreshed => {
+    refreshedDevices.push((refreshed as { Name: string }).Name);
+  };
+  (bridge as unknown as { attachDeviceListeners: (device: unknown) => void }).attachDeviceListeners(device);
+
+  events.emit(SonosEvents.AVTransport, {});
+  events.emit(SonosEvents.CurrentTrackUri, 'x-rincon-queue:RINCON_1#0');
+  events.emit(SonosEvents.CurrentTrackMetadata, { Title: 'Blue Train' });
+  events.emit(SonosEvents.CurrentTransportState, 'PLAYING');
+  events.emit(SonosEvents.CurrentTransportStateSimple, 'PLAYING');
+  events.emit(SonosEvents.PlaybackStopped);
+  events.emit(SonosEvents.GroupName, 'Office');
+
+  assert.deepEqual(refreshedDevices, [
+    'Office',
+    'Office',
+    'Office',
+    'Office',
+    'Office',
+    'Office',
+    'Office',
+  ]);
 });
