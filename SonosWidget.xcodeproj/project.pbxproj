@@ -72,6 +72,7 @@
 				HueAmbienceStore.swift,
 				HueBridgeClient.swift,
 				HueCredentialStore.swift,
+				MusicAmbienceManager.swift,
 			);
 			target = BA832D612F90D2A80023DEE7 /* TheWidgetExtension */;
 		};
@@ -91,6 +92,7 @@
 				HueAmbienceStore.swift,
 				HueBridgeClient.swift,
 				HueCredentialStore.swift,
+				MusicAmbienceManager.swift,
 				Models.swift,
 				QueueArtDiskCache.swift,
 				RelayClient.swift,
