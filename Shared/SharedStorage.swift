@@ -187,6 +187,48 @@ enum SharedStorage {
         set { defaults.set(newValue, forKey: "agentToken") }
     }
 
+    // MARK: - Hue Music Ambience
+
+    nonisolated static var hueAmbienceEnabled: Bool {
+        get { defaults.bool(forKey: "hueAmbienceEnabled") }
+        set { defaults.set(newValue, forKey: "hueAmbienceEnabled") }
+    }
+
+    nonisolated static var hueBridgeData: Data? {
+        get { defaults.data(forKey: "hueBridgeData") }
+        set { defaults.set(newValue, forKey: "hueBridgeData") }
+    }
+
+    nonisolated static var hueMappingsData: Data? {
+        get { defaults.data(forKey: "hueMappingsData") }
+        set { defaults.set(newValue, forKey: "hueMappingsData") }
+    }
+
+    nonisolated static var hueResourcesData: Data? {
+        get { defaults.data(forKey: "hueResourcesData") }
+        set { defaults.set(newValue, forKey: "hueResourcesData") }
+    }
+
+    nonisolated static var hueGroupStrategyRaw: String? {
+        get { defaults.string(forKey: "hueGroupStrategy") }
+        set { defaults.set(newValue, forKey: "hueGroupStrategy") }
+    }
+
+    nonisolated static var hueStopBehaviorRaw: String? {
+        get { defaults.string(forKey: "hueStopBehavior") }
+        set { defaults.set(newValue, forKey: "hueStopBehavior") }
+    }
+
+    nonisolated static var hueMotionStyleRaw: String? {
+        get { defaults.string(forKey: "hueMotionStyle") }
+        set { defaults.set(newValue, forKey: "hueMotionStyle") }
+    }
+
+    nonisolated static var hueLastStatusText: String? {
+        get { defaults.string(forKey: "hueLastStatusText") }
+        set { defaults.set(newValue, forKey: "hueLastStatusText") }
+    }
+
     // MARK: - Saved Speakers
 
     nonisolated static var savedSpeakers: [SonosPlayer] {

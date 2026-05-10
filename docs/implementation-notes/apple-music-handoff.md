@@ -42,6 +42,31 @@ The iPhone Music player starts only after a valid store ID is found. Sonos is
 paused after iPhone playback succeeds, so a failed reverse handoff does not stop
 the current Sonos playback.
 
+## Forward HANDOFF: Apple Music iPhone -> Sonos
+
+Forward HANDOFF still starts from the currently playing Apple Music item on the
+iPhone. The app uses Sonos Cloud search to match that current item against the
+linked Apple Music account, then attempts a best-effort album context upgrade:
+
+1. Resolve the matched Sonos Cloud track's album/container id.
+2. Browse the album through Sonos Cloud.
+3. Convert playable album tracks into Sonos `BrowseItem` values.
+4. Replace the selected Sonos target's LAN queue with the whole album.
+5. Seek the Sonos queue to the matched album track.
+6. Seek by time near the iPhone playback position.
+
+The real Apple Music Up Next queue is not used because public iOS APIs do not
+expose enumerable entries from the system Music app queue. This feature syncs
+album context only. Playlists, stations, radio, and manually edited Up Next
+continue to transfer as the current song.
+
+Sonos queue mutation is LAN-only in this app. If the selected target is in
+Cloud/remote mode, forward HANDOFF falls back to current-song transfer and
+shows `Queue sync requires the same network`.
+
+Remote current-song transfer is best-effort because Sonos Cloud can reject some
+service URIs that play normally over LAN.
+
 ## Queue Behavior
 
 Reverse handoff is queue-aware for Apple Music queues. When Sonos is playing
