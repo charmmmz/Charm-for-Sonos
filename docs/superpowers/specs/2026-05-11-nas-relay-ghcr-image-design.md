@@ -8,6 +8,8 @@ Build the `nas-relay` Docker image automatically after relevant changes reach `m
 
 The repository gets a single GitHub Actions workflow at `.github/workflows/nas-relay-image.yml`. It uses Docker Buildx to build `nas-relay/Dockerfile` for `linux/amd64` and `linux/arm64`, then pushes the image to `ghcr.io/charmmmz/charm-for-sonos/nas-relay` on non-PR events.
 
+The workflow opts JavaScript actions into the Node 24 runtime with `FORCE_JAVASCRIPT_ACTIONS_TO_NODE24` so it stays ahead of GitHub's 2026 Node 20 action-runtime deprecation.
+
 ## Triggers
 
 - `push` to `main` when `nas-relay/**` or the workflow changes.
