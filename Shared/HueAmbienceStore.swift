@@ -8,6 +8,7 @@ protocol HueAmbienceStorage: AnyObject {
     var resourcesData: Data? { get set }
     var groupStrategyRaw: String? { get set }
     var stopBehaviorRaw: String? { get set }
+    var motionStyleRaw: String? { get set }
     var statusText: String? { get set }
 }
 
@@ -114,6 +115,22 @@ final class HueAmbienceDefaults: HueAmbienceStorage {
         }
     }
 
+    var motionStyleRaw: String? {
+        get {
+            if let defaults {
+                return defaults.string(forKey: "hueMotionStyle")
+            }
+            return SharedStorage.hueMotionStyleRaw
+        }
+        set {
+            if let defaults {
+                updateOptional(newValue, forKey: "hueMotionStyle", in: defaults)
+            } else {
+                SharedStorage.hueMotionStyleRaw = newValue
+            }
+        }
+    }
+
     var statusText: String? {
         get {
             if let defaults {
@@ -195,6 +212,12 @@ final class HueAmbienceStore {
         }
     }
 
+    var motionStyle: HueAmbienceMotionStyle {
+        didSet {
+            storage.motionStyleRaw = motionStyle.rawValue
+        }
+    }
+
     var statusText: String? {
         didSet {
             storage.statusText = statusText
@@ -212,6 +235,8 @@ final class HueAmbienceStore {
             .flatMap(HueGroupSyncStrategy.init(rawValue:)) ?? .default
         self.stopBehavior = storage.stopBehaviorRaw
             .flatMap(HueAmbienceStopBehavior.init(rawValue:)) ?? .default
+        self.motionStyle = storage.motionStyleRaw
+            .flatMap(HueAmbienceMotionStyle.init(rawValue:)) ?? .default
         self.statusText = storage.statusText
     }
 

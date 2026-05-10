@@ -36,6 +36,7 @@ final class MusicAmbienceManager {
     @ObservationIgnored private let store: HueAmbienceStore
     @ObservationIgnored private let renderer: HueAmbienceRendering?
     @ObservationIgnored private let targetResolver: HueTargetResolving?
+    @ObservationIgnored private let flowIntervalSeconds: TimeInterval
     @ObservationIgnored private var lastTrackKey: String?
     @ObservationIgnored private var lastPalette: [HueRGBColor] = []
     @ObservationIgnored private var lastRenderSignature: RenderSignature?
@@ -46,11 +47,13 @@ final class MusicAmbienceManager {
     init(
         store: HueAmbienceStore? = nil,
         renderer: HueAmbienceRendering? = nil,
-        targetResolver: HueTargetResolving? = nil
+        targetResolver: HueTargetResolving? = nil,
+        flowIntervalSeconds: TimeInterval = 8
     ) {
         self.store = store ?? .shared
         self.renderer = renderer
         self.targetResolver = targetResolver
+        self.flowIntervalSeconds = flowIntervalSeconds
         refreshStatus()
     }
 
@@ -140,10 +143,12 @@ final class MusicAmbienceManager {
         lastResolvedTargets = resolvedTargets
 
         let palette = lastPalette
+        let motionStyle = store.motionStyle
         let signature = RenderSignature(
             trackKey: trackKey,
             palette: palette,
-            targets: resolvedTargets
+            targets: resolvedTargets,
+            motionStyle: motionStyle
         )
         guard signature != lastRenderSignature else {
             return
@@ -157,28 +162,54 @@ final class MusicAmbienceManager {
         renderTask?.cancel()
         renderGeneration += 1
         let generation = renderGeneration
-        renderTask = Task {
+        let intervalSeconds = flowIntervalSeconds
+        renderTask = Task { [weak self] in
             do {
-                try await renderer.apply(
-                    palette: palette,
-                    to: resolvedTargets,
-                    transitionSeconds: 4
-                )
-                if renderGeneration == generation {
+                switch motionStyle {
+                case .flowing where palette.count > 1:
+                    var step = 0
+                    while !Task.isCancelled {
+                        try await renderer.apply(
+                            palette: Self.rotatedPalette(palette, by: step),
+                            to: resolvedTargets,
+                            transitionSeconds: intervalSeconds
+                        )
+                        step += 1
+                        try await Task.sleep(nanoseconds: Self.sleepNanoseconds(for: intervalSeconds))
+                    }
+                case .flowing, .still:
+                    try await renderer.apply(
+                        palette: palette,
+                        to: resolvedTargets,
+                        transitionSeconds: 4
+                    )
+                }
+
+                await MainActor.run { [weak self] in
+                    guard let self, renderGeneration == generation else {
+                        return
+                    }
+
                     renderTask = nil
                 }
             } catch is CancellationError {
-                if renderGeneration == generation {
+                await MainActor.run { [weak self] in
+                    guard let self, renderGeneration == generation else {
+                        return
+                    }
+
                     renderTask = nil
                 }
             } catch {
-                guard !Task.isCancelled, renderGeneration == generation else {
-                    return
-                }
+                await MainActor.run { [weak self] in
+                    guard let self, !Task.isCancelled, renderGeneration == generation else {
+                        return
+                    }
 
-                renderTask = nil
-                lastRenderSignature = nil
-                setStatus(.error(error.localizedDescription))
+                    renderTask = nil
+                    lastRenderSignature = nil
+                    setStatus(.error(error.localizedDescription))
+                }
             }
         }
     }
@@ -225,10 +256,21 @@ final class MusicAmbienceManager {
             }
         }
     }
+
+    private static func rotatedPalette(_ palette: [HueRGBColor], by offset: Int) -> [HueRGBColor] {
+        guard !palette.isEmpty else { return [] }
+        let shift = offset % palette.count
+        return Array(palette[shift...] + palette[..<shift])
+    }
+
+    private static func sleepNanoseconds(for seconds: TimeInterval) -> UInt64 {
+        UInt64(max(seconds, 0.1) * 1_000_000_000)
+    }
 }
 
 private struct RenderSignature: Equatable {
     var trackKey: String
     var palette: [HueRGBColor]
     var targets: [HueResolvedAmbienceTarget]
+    var motionStyle: HueAmbienceMotionStyle
 }

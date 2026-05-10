@@ -30,6 +30,10 @@ final class HueAmbienceStoreTests: XCTestCase {
         XCTAssertEqual(HueAmbienceStopBehavior.default, .leaveCurrent)
     }
 
+    func testMotionStyleDefaultsToFlowing() {
+        XCTAssertEqual(HueAmbienceMotionStyle.default, .flowing)
+    }
+
     func testLiveEntertainmentWithoutRuntimeUsesClearUnavailableStatus() {
         XCTAssertEqual(
             HueLiveEntertainmentRuntimeStatus.unavailable.reason,
@@ -63,6 +67,21 @@ final class HueAmbienceStoreTests: XCTestCase {
         let restored = HueAmbienceStore(storage: storage)
 
         XCTAssertEqual(restored.stopBehavior, .turnOff)
+    }
+
+    func testStorePersistsMotionStyle() {
+        let suiteName = "HueAmbienceStoreTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let storage = HueAmbienceDefaults(defaults: defaults)
+        let store = HueAmbienceStore(storage: storage)
+
+        store.motionStyle = .still
+
+        let restored = HueAmbienceStore(storage: storage)
+
+        XCTAssertEqual(restored.motionStyle, .still)
     }
 
     func testStorePersistsEnabledBridgeMappingsAndStrategy() {

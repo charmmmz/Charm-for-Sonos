@@ -13,19 +13,19 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
-		BA832DA02F92E1000023DEE7 /* PBXContainerItemProxy */ = {
-			isa = PBXContainerItemProxy;
-			containerPortal = BA832D482F90D1690023DEE7 /* Project object */;
-			proxyType = 1;
-			remoteGlobalIDString = BA832D4F2F90D1690023DEE7;
-			remoteInfo = SonosWidget;
-		};
 		BA832D762F90D2AA0023DEE7 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = BA832D482F90D1690023DEE7 /* Project object */;
 			proxyType = 1;
 			remoteGlobalIDString = BA832D612F90D2A80023DEE7;
 			remoteInfo = TheWidgetExtension;
+		};
+		BA832DA02F92E1000023DEE7 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = BA832D482F90D1690023DEE7 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = BA832D4F2F90D1690023DEE7;
+			remoteInfo = SonosWidget;
 		};
 /* End PBXContainerItemProxy section */
 
@@ -60,6 +60,13 @@
 				Info.plist,
 			);
 			target = BA832D612F90D2A80023DEE7 /* TheWidgetExtension */;
+		};
+		BA832D7E2F90D3000023DEE7 /* Exceptions for "SonosWidget" folder in "SonosWidget" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = BA832D4F2F90D1690023DEE7 /* SonosWidget */;
 		};
 		BA832D962F92D0000023DEE7 /* Exceptions for "Shared" folder in "TheWidgetExtension" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
@@ -99,8 +106,8 @@
 				RelayManager.swift,
 				SharedStorage.swift,
 				SonosAPI.swift,
-				SonosAuth.swift,
 				SonosAppleMusicTrackResolver.swift,
+				SonosAuth.swift,
 				SonosCloudAPI.swift,
 				SonosControl.swift,
 				SonosLog.swift,
@@ -109,13 +116,6 @@
 				ToastModifier.swift,
 			);
 			target = BA832D9C2F92E1000023DEE7 /* SonosWidgetTests */;
-		};
-		BA832D7E2F90D3000023DEE7 /* Exceptions for "SonosWidget" folder in "SonosWidget" target */ = {
-			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
-			membershipExceptions = (
-				Info.plist,
-			);
-			target = BA832D4F2F90D1690023DEE7 /* SonosWidget */;
 		};
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
@@ -387,15 +387,15 @@
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
-		BA832DA12F92E1000023DEE7 /* PBXTargetDependency */ = {
-			isa = PBXTargetDependency;
-			target = BA832D4F2F90D1690023DEE7 /* SonosWidget */;
-			targetProxy = BA832DA02F92E1000023DEE7 /* PBXContainerItemProxy */;
-		};
 		BA832D772F90D2AA0023DEE7 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
 			target = BA832D612F90D2A80023DEE7 /* TheWidgetExtension */;
 			targetProxy = BA832D762F90D2AA0023DEE7 /* PBXContainerItemProxy */;
+		};
+		BA832DA12F92E1000023DEE7 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = BA832D4F2F90D1690023DEE7 /* SonosWidget */;
+			targetProxy = BA832DA02F92E1000023DEE7 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 

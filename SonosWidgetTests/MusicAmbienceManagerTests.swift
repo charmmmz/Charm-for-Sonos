@@ -201,6 +201,7 @@ final class MusicAmbienceManagerTests: XCTestCase {
     func testReceiveDoesNotReapplySameTrackPaletteAndTargets() async {
         let store = makeStore()
         store.isEnabled = true
+        store.motionStyle = .still
         store.bridge = HueBridgeInfo(id: "bridge-1", ipAddress: "192.168.1.20", name: "Home Hue")
         store.upsertMapping(HueSonosMapping(
             sonosID: "living",
@@ -224,6 +225,43 @@ final class MusicAmbienceManagerTests: XCTestCase {
         try? await Task.sleep(nanoseconds: 100_000_000)
 
         XCTAssertEqual(renderer.applyCount, 1)
+    }
+
+    func testFlowingMotionReappliesRotatedPaletteWhilePlaying() async {
+        let store = makeStore()
+        store.isEnabled = true
+        store.motionStyle = .flowing
+        store.bridge = HueBridgeInfo(id: "bridge-1", ipAddress: "192.168.1.20", name: "Home Hue")
+        store.upsertMapping(HueSonosMapping(
+            sonosID: "living",
+            sonosName: "Living",
+            preferredTarget: .room("room-1")
+        ))
+
+        let firstApply = expectation(description: "first flow render")
+        let secondApply = expectation(description: "second flow render")
+        let renderer = RecordingAmbienceRendering(
+            applyExpectation: firstApply,
+            secondApplyExpectation: secondApply
+        )
+        let manager = MusicAmbienceManager(
+            store: store,
+            renderer: renderer,
+            targetResolver: StaticHueTargetResolving(targets: [makeTarget()]),
+            flowIntervalSeconds: 0.1
+        )
+        var snapshot = makePlayingSnapshot(trackTitle: "Flow Song")
+        snapshot.albumArtImage = makeMultiColorImageData()
+
+        manager.receive(snapshot: snapshot)
+
+        await fulfillment(of: [firstApply, secondApply], timeout: 1)
+        XCTAssertGreaterThanOrEqual(renderer.applyCount, 2)
+        XCTAssertGreaterThanOrEqual(renderer.appliedPalettes.first?.count ?? 0, 2)
+        XCTAssertNotEqual(renderer.appliedPalettes.first, renderer.appliedPalettes.dropFirst().first)
+
+        snapshot.isPlaying = false
+        manager.receive(snapshot: snapshot)
     }
 
     func testReceiveStopsActiveAmbienceWhenPlaybackStops() async {
@@ -386,22 +424,41 @@ final class MusicAmbienceManagerTests: XCTestCase {
         }
         return image.pngData()!
     }
+
+    private func makeMultiColorImageData() -> Data {
+        let renderer = UIGraphicsImageRenderer(size: CGSize(width: 40, height: 40))
+        let image = renderer.image { context in
+            UIColor.red.setFill()
+            context.fill(CGRect(x: 0, y: 0, width: 20, height: 20))
+            UIColor.green.setFill()
+            context.fill(CGRect(x: 20, y: 0, width: 20, height: 20))
+            UIColor.blue.setFill()
+            context.fill(CGRect(x: 0, y: 20, width: 20, height: 20))
+            UIColor.yellow.setFill()
+            context.fill(CGRect(x: 20, y: 20, width: 20, height: 20))
+        }
+        return image.pngData()!
+    }
 }
 
 private final class RecordingAmbienceRendering: HueAmbienceRendering {
     private let applyExpectation: XCTestExpectation?
+    private let secondApplyExpectation: XCTestExpectation?
     private let stopExpectation: XCTestExpectation?
     private(set) var applyCount = 0
     private(set) var stopCount = 0
     private(set) var lastTargets: [HueResolvedAmbienceTarget] = []
+    private(set) var appliedPalettes: [[HueRGBColor]] = []
     private(set) var lastStopTargets: [HueResolvedAmbienceTarget] = []
     private(set) var lastStopBehavior: HueAmbienceStopBehavior?
 
     init(
         applyExpectation: XCTestExpectation? = nil,
+        secondApplyExpectation: XCTestExpectation? = nil,
         stopExpectation: XCTestExpectation? = nil
     ) {
         self.applyExpectation = applyExpectation
+        self.secondApplyExpectation = secondApplyExpectation
         self.stopExpectation = stopExpectation
     }
 
@@ -412,7 +469,12 @@ private final class RecordingAmbienceRendering: HueAmbienceRendering {
     ) async throws {
         applyCount += 1
         lastTargets = targets
-        applyExpectation?.fulfill()
+        appliedPalettes.append(palette)
+        if applyCount == 1 {
+            applyExpectation?.fulfill()
+        } else if applyCount == 2 {
+            secondApplyExpectation?.fulfill()
+        }
     }
 
     func stop(targets: [HueResolvedAmbienceTarget], behavior: HueAmbienceStopBehavior) async throws {

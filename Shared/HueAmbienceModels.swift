@@ -70,6 +70,31 @@ enum HueAmbienceStopBehavior: String, Codable, Equatable, Sendable, CaseIterable
     }
 }
 
+enum HueAmbienceMotionStyle: String, Codable, Equatable, Sendable, CaseIterable {
+    case flowing
+    case still
+
+    static let `default`: HueAmbienceMotionStyle = .flowing
+
+    var label: String {
+        switch self {
+        case .flowing:
+            return "Flowing"
+        case .still:
+            return "Still"
+        }
+    }
+
+    var description: String {
+        switch self {
+        case .flowing:
+            return "Slowly rotates album colors across the selected Hue lights while the app is active."
+        case .still:
+            return "Applies the current album colors once per track."
+        }
+    }
+}
+
 enum HueLiveEntertainmentRuntimeStatus: Equatable, Sendable {
     case unavailable
     case available

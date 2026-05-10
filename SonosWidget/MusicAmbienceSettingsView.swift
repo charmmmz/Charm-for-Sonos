@@ -124,14 +124,14 @@ struct HueAmbienceSetupSheet: View {
     @State private var hueLights: [HueLightResource] = []
     @State private var setupError: String?
     @State private var isBusy = false
+    @State private var isManualBridgeExpanded = false
 
     var body: some View {
         NavigationStack {
             Form {
-                bridgeSection
-                manualBridgeSection
+                connectionSection
                 assignmentsSection
-                enhancedSection
+                effectSection
             }
             .navigationTitle("Music Ambience")
             .navigationBarTitleDisplayMode(.inline)
@@ -149,18 +149,34 @@ struct HueAmbienceSetupSheet: View {
         }
     }
 
-    private var bridgeSection: some View {
+    private var connectionSection: some View {
         Section {
             if let bridge = store.bridge {
-                LabeledContent("Paired", value: "\(bridge.name) · \(bridge.ipAddress)")
+                LabeledContent("Bridge", value: "\(bridge.name) · \(bridge.ipAddress)")
+                LabeledContent("Hue Areas", value: "\(assignmentAreas.count)")
             }
 
-            Button {
-                Task { await findHueBridges() }
-            } label: {
-                Label("Find Hue Bridge", systemImage: "dot.radiowaves.left.and.right")
+            HStack {
+                Button {
+                    Task { await findHueBridges() }
+                } label: {
+                    Label("Find", systemImage: "dot.radiowaves.left.and.right")
+                }
+                .buttonStyle(.borderless)
+                .disabled(isBusy)
+
+                if store.bridge != nil {
+                    Spacer()
+
+                    Button {
+                        Task { await refreshHueResources() }
+                    } label: {
+                        Label("Refresh Areas", systemImage: "arrow.clockwise")
+                    }
+                    .buttonStyle(.borderless)
+                    .disabled(isBusy)
+                }
             }
-            .disabled(isBusy)
 
             if !discoveredBridges.isEmpty {
                 Picker("Discovered Bridge", selection: $selectedBridgeID) {
@@ -177,13 +193,18 @@ struct HueAmbienceSetupSheet: View {
                 .disabled(selectedBridge == nil || isBusy)
             }
 
-            if store.bridge != nil {
+            DisclosureGroup("Manual IP", isExpanded: $isManualBridgeExpanded) {
+                TextField("192.168.1.20", text: $bridgeIP)
+                    .keyboardType(.decimalPad)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                TextField("Hue Bridge", text: $bridgeName)
                 Button {
-                    Task { await refreshHueResources() }
+                    Task { await pairManualBridge() }
                 } label: {
-                    Label("Refresh Hue Areas", systemImage: "arrow.clockwise")
+                    Label("Pair Manual Bridge", systemImage: "link")
                 }
-                .disabled(isBusy)
+                .disabled(manualBridge == nil || isBusy)
             }
 
             if isBusy {
@@ -196,30 +217,14 @@ struct HueAmbienceSetupSheet: View {
                     .foregroundStyle(.red)
             }
         } header: {
-            Text("Bridge")
+            Text("Connection")
         } footer: {
-            Text("Press the Hue Bridge link button before pairing.")
-        }
-    }
-
-    private var manualBridgeSection: some View {
-        Section("Manual Bridge") {
-            TextField("192.168.1.20", text: $bridgeIP)
-                .keyboardType(.decimalPad)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-            TextField("Hue Bridge", text: $bridgeName)
-            Button {
-                Task { await pairManualBridge() }
-            } label: {
-                Label("Pair Manual Bridge", systemImage: "link")
-            }
-            .disabled(manualBridge == nil || isBusy)
+            Text("Use Find on the same Wi-Fi network, or expand Manual IP. Press the Hue Bridge link button before pairing.")
         }
     }
 
     private var assignmentsSection: some View {
-        Section("Assignments") {
+        Section {
             if sonosSpeakers.isEmpty {
                 Text("Connect Sonos speakers before assigning Hue areas.")
                     .foregroundStyle(.secondary)
@@ -243,13 +248,27 @@ struct HueAmbienceSetupSheet: View {
                     )
                 }
             }
+        } header: {
+            Text("Speaker Assignments")
+        } footer: {
+            Text("Choosing an area saves immediately. Entertainment Areas are preferred; Rooms and Zones appear only when no Entertainment Area exists.")
         }
     }
 
-    private var enhancedSection: some View {
-        Section("NAS Enhanced") {
+    private var effectSection: some View {
+        Section("Effect") {
+            Picker("Light Motion", selection: $store.motionStyle) {
+                ForEach(HueAmbienceMotionStyle.allCases, id: \.self) { motionStyle in
+                    Text(motionStyle.label).tag(motionStyle)
+                }
+            }
+
+            Text(store.motionStyle.description)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
             LabeledContent("Live Entertainment", value: HueLiveEntertainmentRuntimeStatus.unavailable.reason)
-            Text("App-only mode can still apply album colors and gradient-ready updates while Charm Player is active.")
+            Text("Beat-synced Entertainment streaming still needs the NAS runtime. App-only mode uses slow Hue transitions while Charm Player is active.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -399,83 +418,81 @@ private struct HueMappingRow: View {
     let areas: [HueAreaResource]
     let lights: [HueLightResource]
 
-    @State private var selectedAreaID = ""
-
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(speaker.name)
-                .font(.subheadline.weight(.semibold))
-
-            if let mapping = store.mapping(forSonosID: speaker.id) {
-                Text("Current: \(targetLabel(mapping.preferredTarget)) · \(mapping.capability.label)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            Picker("Hue Area", selection: $selectedAreaID) {
-                Text("Choose Area").tag("")
-                ForEach(areas) { area in
-                    Text("\(area.name) · \(area.kind.label)").tag(area.id)
+            HStack(alignment: .center, spacing: 12) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(speaker.name)
+                        .font(.subheadline.weight(.semibold))
+                    Text(statusText)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
                 }
-            }
 
-            Button {
-                saveSelectedArea()
-            } label: {
-                Label(
-                    isSelectedAreaSaved ? "Saved Assignment" : "Save Assignment",
-                    systemImage: isSelectedAreaSaved ? "checkmark.circle.fill" : "checkmark.circle"
-                )
+                Spacer(minLength: 8)
+
+                Menu {
+                    ForEach(areas) { area in
+                        Button {
+                            saveArea(area)
+                        } label: {
+                            if currentArea?.id == area.id {
+                                Label(areaMenuTitle(area), systemImage: "checkmark")
+                            } else {
+                                Text(areaMenuTitle(area))
+                            }
+                        }
+                    }
+                } label: {
+                    HStack(spacing: 4) {
+                        Text(currentArea?.name ?? "Choose")
+                            .lineLimit(1)
+                        Image(systemName: "chevron.up.chevron.down")
+                            .font(.caption)
+                    }
+                }
+                .buttonStyle(.borderless)
             }
-            .disabled(selectedArea == nil || isSelectedAreaSaved)
 
             if store.mapping(forSonosID: speaker.id) != nil {
                 Button(role: .destructive) {
-                    store.removeMapping(forSonosID: speaker.id)
-                    selectedAreaID = ""
-                    manager.refreshStatus()
+                    removeAssignment()
                 } label: {
-                    Label("Remove Assignment", systemImage: "minus.circle")
+                    Label("Remove", systemImage: "minus.circle")
                 }
+                .buttonStyle(.borderless)
+                .font(.caption)
             }
         }
-        .padding(.vertical, 2)
-        .onAppear {
-            syncSelectionFromMapping()
-        }
-        .onChange(of: areas.map(\.id)) {
-            syncSelectionFromMapping()
-        }
-        .onChange(of: selectedAreaID) {
-            saveSelectedAreaIfChanged()
-        }
+        .padding(.vertical, 4)
     }
 
-    private var selectedArea: HueAreaResource? {
-        areas.first { $0.id == selectedAreaID }
+    private var currentMapping: HueSonosMapping? {
+        store.mapping(forSonosID: speaker.id)
     }
 
-    private var isSelectedAreaSaved: Bool {
-        guard let selectedArea else {
-            return false
+    private var currentArea: HueAreaResource? {
+        guard let target = currentMapping?.preferredTarget else {
+            return nil
+        }
+        return areas.first { $0.ambienceTarget == target }
+    }
+
+    private var statusText: String {
+        guard let mapping = currentMapping else {
+            return "No Hue area assigned"
         }
 
-        return store.mapping(forSonosID: speaker.id)?.preferredTarget == selectedArea.ambienceTarget
+        let areaName = currentArea?.name ?? targetLabel(mapping.preferredTarget)
+        return "\(areaName) · \(mapping.capability.label)"
     }
 
-    private func saveSelectedAreaIfChanged() {
-        guard !isSelectedAreaSaved else {
-            return
-        }
-
-        saveSelectedArea()
-    }
-
-    private func saveSelectedArea() {
+    private func saveArea(_ area: HueAreaResource) {
         let didSave = store.assignArea(
             sonosID: speaker.id,
             sonosName: speaker.name,
-            areaID: selectedAreaID,
+            areaID: area.id,
             from: areas,
             lights: lights
         )
@@ -484,14 +501,13 @@ private struct HueMappingRow: View {
         }
     }
 
-    private func syncSelectionFromMapping() {
-        guard selectedAreaID.isEmpty,
-              let targetID = store.mapping(forSonosID: speaker.id)?.preferredTarget?.id,
-              areas.contains(where: { $0.id == targetID }) else {
-            return
-        }
+    private func removeAssignment() {
+        store.removeMapping(forSonosID: speaker.id)
+        manager.refreshStatus()
+    }
 
-        selectedAreaID = targetID
+    private func areaMenuTitle(_ area: HueAreaResource) -> String {
+        "\(area.name) · \(area.kind.label)"
     }
 
     private func targetLabel(_ target: HueAmbienceTarget?) -> String {

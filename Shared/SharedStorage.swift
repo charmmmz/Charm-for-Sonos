@@ -219,6 +219,11 @@ enum SharedStorage {
         set { defaults.set(newValue, forKey: "hueStopBehavior") }
     }
 
+    nonisolated static var hueMotionStyleRaw: String? {
+        get { defaults.string(forKey: "hueMotionStyle") }
+        set { defaults.set(newValue, forKey: "hueMotionStyle") }
+    }
+
     nonisolated static var hueLastStatusText: String? {
         get { defaults.string(forKey: "hueLastStatusText") }
         set { defaults.set(newValue, forKey: "hueLastStatusText") }
