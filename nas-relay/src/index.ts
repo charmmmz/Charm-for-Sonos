@@ -8,6 +8,9 @@ import { SonosBridge } from './sonos.js';
 import { createInternalSonosRouter, internalAuthMiddleware } from './internalSonosRoutes.js';
 import { ApnsClient, toSwiftDate } from './apns.js';
 import { TokenStore } from './tokenStore.js';
+import { HueAmbienceConfigStore } from './hueConfigStore.js';
+import { HueAmbienceService } from './hueAmbienceService.js';
+import { createHueAmbienceRouter } from './hueRoutes.js';
 import type { LiveActivityContentState, RegisterRequest, SonosGroupSnapshot } from './types.js';
 
 const log = pino({
@@ -28,6 +31,11 @@ async function main(): Promise<void> {
   // ---- core wiring ------------------------------------------------------
   const tokens = new TokenStore(DATA_DIR, log);
   await tokens.load();
+  const hueAmbience = new HueAmbienceService(
+    new HueAmbienceConfigStore(DATA_DIR),
+    log.child({ module: 'hue-ambience' }),
+  );
+  await hueAmbience.load();
 
   const apns = await ApnsClient.create(
     {
@@ -45,6 +53,8 @@ async function main(): Promise<void> {
 
   // ---- snapshot → APNs pipeline ----------------------------------------
   sonos.on('change', async (snap: SonosGroupSnapshot) => {
+    hueAmbience.receiveSnapshot(snap);
+
     const matching = tokens.forGroup(snap.groupId);
     if (matching.length === 0) return;
 
@@ -73,7 +83,7 @@ async function main(): Promise<void> {
 
   // ---- HTTP -------------------------------------------------------------
   const app = express();
-  app.use(express.json({ limit: '32kb' }));
+  app.use(express.json({ limit: '512kb' }));
   app.use(
     pinoHttp({
       logger: log,
@@ -83,6 +93,7 @@ async function main(): Promise<void> {
   );
 
   app.use('/internal', internalAuthMiddleware(log), createInternalSonosRouter(sonos, log));
+  app.use('/api', createHueAmbienceRouter(hueAmbience, log));
 
   app.get('/api/health', (_req, res) => {
     res.json({
@@ -93,6 +104,7 @@ async function main(): Promise<void> {
         isPlaying: s.isPlaying,
         title: s.trackTitle,
       })),
+      hueAmbience: hueAmbience.status(),
     });
   });
 
@@ -141,6 +153,7 @@ async function main(): Promise<void> {
     log.info({ signal }, 'shutting down');
     server.close();
     sonos.stop();
+    void hueAmbience.stop();
     apns.shutdown();
     setTimeout(() => process.exit(0), 500);
   };

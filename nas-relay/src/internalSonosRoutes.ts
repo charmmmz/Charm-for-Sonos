@@ -26,6 +26,7 @@ function snapshotJson(s: {
   trackTitle: string;
   artist: string;
   album: string;
+  albumArtUri?: string | null;
   isPlaying: boolean;
   positionSeconds: number;
   durationSeconds: number;
@@ -38,6 +39,7 @@ function snapshotJson(s: {
     trackTitle: s.trackTitle,
     artist: s.artist,
     album: s.album,
+    albumArtUri: s.albumArtUri,
     isPlaying: s.isPlaying,
     positionSeconds: s.positionSeconds,
     durationSeconds: s.durationSeconds,

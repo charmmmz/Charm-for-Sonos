@@ -17,6 +17,7 @@ struct MusicAmbienceSettingsView: View {
     @Bindable var manager: MusicAmbienceManager
     let sonosSpeakers: [SonosPlayer]
     let presentSetup: () -> Void
+    @Bindable private var relay = RelayManager.shared
 
     var body: some View {
         Section {
@@ -46,6 +47,22 @@ struct MusicAmbienceSettingsView: View {
                         Text(behavior.label).tag(behavior)
                     }
                 }
+
+                Button {
+                    Task {
+                        await relay.pushHueAmbienceConfig(
+                            store: store,
+                            sonosSpeakers: sonosSpeakers
+                        )
+                    }
+                } label: {
+                    Label("Sync to NAS Relay", systemImage: "server.rack")
+                }
+                .disabled(!canSyncToRelay)
+
+                Text(nasRelayStatusText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         } header: {
             Text("Hue Music Ambience")
@@ -54,6 +71,29 @@ struct MusicAmbienceSettingsView: View {
         }
         .onChange(of: store.isEnabled) {
             manager.refreshStatus()
+        }
+    }
+
+    private var canSyncToRelay: Bool {
+        relay.url != nil
+            && store.bridge != nil
+            && !store.mappings.isEmpty
+            && relay.hueAmbienceSyncStatus != .syncing
+    }
+
+    private var nasRelayStatusText: String {
+        switch relay.hueAmbienceSyncStatus {
+        case .synced(let date):
+            return "NAS Relay has the current Music Ambience config · \(date.formatted(date: .omitted, time: .shortened))"
+        case .syncing:
+            return "Uploading Bridge credentials and Hue assignments to your local relay..."
+        case .failed(let reason):
+            return "NAS Relay sync failed: \(reason)"
+        case .idle:
+            if relay.url == nil {
+                return "Set a NAS Relay URL below, then sync this Hue setup so Docker can run the light effect."
+            }
+            return "Sync sends the Hue app key and assignments to your local NAS Relay."
         }
     }
 

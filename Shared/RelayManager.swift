@@ -23,8 +23,29 @@ final class RelayManager {
         case unreachable(reason: String?)
     }
 
+    enum HueAmbienceSyncStatus: Equatable {
+        case idle
+        case syncing
+        case synced(Date)
+        case failed(String)
+
+        var title: String {
+            switch self {
+            case .idle:
+                return "Not synced"
+            case .syncing:
+                return "Syncing Music Ambience"
+            case .synced:
+                return "Synced to NAS Relay"
+            case .failed(let reason):
+                return reason
+            }
+        }
+    }
+
     private(set) var urlString: String = ""
     private(set) var status: Status = .disabled
+    var hueAmbienceSyncStatus: HueAmbienceSyncStatus = .idle
 
     @ObservationIgnored private var periodicTask: Task<Void, Never>?
     @ObservationIgnored private var inFlightProbe: Task<Void, Never>?
@@ -58,6 +79,7 @@ final class RelayManager {
 
         if trimmed.isEmpty {
             status = .disabled
+            hueAmbienceSyncStatus = .idle
             stopPeriodicProbe()
             return
         }
@@ -112,4 +134,5 @@ final class RelayManager {
         periodicTask?.cancel()
         periodicTask = nil
     }
+
 }

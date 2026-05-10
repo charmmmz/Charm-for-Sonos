@@ -34,6 +34,7 @@ export interface SonosGroupSnapshot {
   trackTitle: string;
   artist: string;
   album: string;
+  albumArtUri?: string | null;
   isPlaying: boolean;
   positionSeconds: number;
   durationSeconds: number;

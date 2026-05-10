@@ -1,8 +1,9 @@
 # Sonos Live Activity Relay
 
 A small Node.js + TypeScript service that subscribes to Sonos UPnP events on
-your LAN and pushes the corresponding Live Activity updates to the
-Charm for Sonos iOS app via Apple's APNs HTTP/2 endpoint.
+your LAN, pushes the corresponding Live Activity updates to the Charm for
+Sonos iOS app via Apple's APNs HTTP/2 endpoint, and can run Hue Music Ambience
+while the iPhone app is suspended.
 
 The point: keep the iPhone Lock Screen Live Activity fresh **without** the
 iOS app needing to run in the background. UPnP eventing means we don't poll
@@ -19,6 +20,10 @@ APNs, and the Live Activity updates within another ~1–3 s.
   — the widget falls back to its on-device cache, same path it uses today
   for the local-update flow. Phase 2 will fetch and downsample art on the
   relay and embed it.
+- Hue Music Ambience config is uploaded from the iOS app. The relay stores the
+  Hue app key and assignments in `DATA_DIR/hue-ambience-config.json`, then
+  applies slow album-palette REST transitions on Sonos play/track changes.
+  True Hue Entertainment DTLS streaming remains a future runtime.
 
 External access (DDNS IPv6 / Cloudflare Tunnel / Tailscale) is intentionally
 out of scope here; bring up the LAN path first, then layer on whichever
@@ -82,6 +87,9 @@ requires for Live Activity pushes.
 | GET    | `/api/health`                         | —                                                               | Liveness + current group snapshots                       |
 | POST   | `/api/register-activity`              | `{ groupId, token, attributes? }`                               | Called by iOS on every push-token rotation               |
 | DELETE | `/api/register-activity/:token`       | path: `:token`                                                  | Called by iOS when the Live Activity ends                |
+| GET    | `/api/hue-ambience/status`            | —                                                               | Hue runtime status without exposing the Hue app key      |
+| PUT    | `/api/hue-ambience/config`            | complete config uploaded by iOS                                 | Stores Bridge key, resources, assignments, and settings  |
+| DELETE | `/api/hue-ambience/config`            | —                                                               | Removes stored Hue config and stops active ambience      |
 
 ### Internal Sonos API (for `nas-agent`)
 
@@ -107,12 +115,19 @@ and inside the relay (it does today via the bridge's `groupName ?? uuid`).
 ```
 nas-relay/
 ├── docker-compose.yml      # Portainer stack
-├── Dockerfile              # multi-stage Node 25 alpine build
+├── Dockerfile              # multi-stage Node 24 alpine build
 ├── .env.example
 ├── package.json / tsconfig.json
 ├── data/                   # mounted volume — tokens.json, apns.p8 live here
 └── src/
     ├── index.ts            # Express + wire-up
+    ├── hueAmbienceService.ts # Sonos snapshots → Hue ambience runtime
+    ├── hueClient.ts        # Hue CLIP v2 client
+    ├── hueConfigStore.ts   # disk-backed Hue config
+    ├── huePalette.ts       # deterministic fallback palettes
+    ├── hueRenderer.ts      # basic/gradient light update bodies
+    ├── hueRoutes.ts        # /api/hue-ambience/*
+    ├── hueTypes.ts         # Hue config/resource models
     ├── internalSonosRoutes.ts  # /internal/sonos/* for Python agent
     ├── sonos.ts            # @svrooij/sonos bridge
     ├── apns.ts             # @parse/node-apn wrapper + dry-run

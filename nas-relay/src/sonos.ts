@@ -141,13 +141,13 @@ export class SonosBridge extends EventEmitter {
 
   private async refreshSnapshot(device: any): Promise<void> {
     try {
-      // Use the device's LAN IP as the group identifier so iOS and the
-      // relay agree without an extra mapping step. iOS already knows the
-      // coordinator's playbackIP; sending that as `groupId` matches the
-      // `device.Host` we read here.
-      const groupId: string = device.Host ?? device.Uuid;
-      const transport = await device.AVTransportService.GetTransportInfo();
-      const position = await device.AVTransportService.GetPositionInfo();
+      // Use the coordinator LAN IP as the group identifier so iOS and the
+      // relay agree without an extra mapping step. iOS sends `playbackIP`,
+      // which is `coordinatorIP ?? ipAddress`.
+      const coordinator = device.Coordinator ?? device;
+      const groupId: string = coordinator.Host ?? device.Host ?? device.Uuid;
+      const transport = await coordinator.AVTransportService.GetTransportInfo();
+      const position = await coordinator.AVTransportService.GetPositionInfo();
 
       const isPlaying = String(transport.CurrentTransportState) === 'PLAYING';
       const positionSeconds = parseDuration(position.RelTime ?? '00:00:00');
@@ -157,16 +157,25 @@ export class SonosBridge extends EventEmitter {
       // fields, but GetPositionInfo gives us back the raw DIDL — title /
       // artist / album live inside, so we either parse the DIDL or use the
       // device's lastTrack cache. The lastTrack cache is friendlier.
-      const trackTitle = device.CurrentTrack?.Title ?? '';
-      const artist = device.CurrentTrack?.Artist ?? '';
-      const album = device.CurrentTrack?.Album ?? '';
+      const trackTitle = coordinator.CurrentTrack?.Title ?? device.CurrentTrack?.Title ?? '';
+      const artist = coordinator.CurrentTrack?.Artist ?? device.CurrentTrack?.Artist ?? '';
+      const album = coordinator.CurrentTrack?.Album ?? device.CurrentTrack?.Album ?? '';
+      const albumArtUri = absoluteAlbumArtUri(
+        coordinator.CurrentTrack?.AlbumArtUri
+          ?? coordinator.CurrentTrack?.AlbumArtURI
+          ?? device.CurrentTrack?.AlbumArtUri
+          ?? device.CurrentTrack?.AlbumArtURI
+          ?? albumArtUriFromDIDL(position.TrackMetaData),
+        coordinator.Host ?? device.Host,
+      );
 
       const snapshot: SonosGroupSnapshot = {
         groupId,
-        speakerName: device.Name ?? device.Uuid,
+        speakerName: coordinator.Name ?? device.Name ?? device.Uuid,
         trackTitle,
         artist,
         album,
+        albumArtUri,
         isPlaying,
         positionSeconds,
         durationSeconds,
@@ -193,4 +202,28 @@ function parseDuration(s: string): number {
   const parts = s.split(':').map(Number);
   if (parts.length !== 3 || parts.some(Number.isNaN)) return 0;
   return parts[0]! * 3600 + parts[1]! * 60 + parts[2]!;
+}
+
+function albumArtUriFromDIDL(metadata?: string): string | null {
+  if (!metadata) return null;
+  const match = metadata.match(/<upnp:albumArtURI[^>]*>([^<]+)<\/upnp:albumArtURI>/i);
+  if (!match?.[1]) return null;
+  return decodeXmlEntities(match[1]);
+}
+
+function absoluteAlbumArtUri(uri: string | null | undefined, host: string | undefined): string | null {
+  if (!uri) return null;
+  if (/^https?:\/\//i.test(uri)) return uri;
+  if (!host) return uri;
+  const path = uri.startsWith('/') ? uri : `/${uri}`;
+  return `http://${host}:1400${path}`;
+}
+
+function decodeXmlEntities(value: string): string {
+  return value
+    .replaceAll('&amp;', '&')
+    .replaceAll('&lt;', '<')
+    .replaceAll('&gt;', '>')
+    .replaceAll('&quot;', '"')
+    .replaceAll('&apos;', "'");
 }

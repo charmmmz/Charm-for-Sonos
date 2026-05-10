@@ -35,8 +35,8 @@ RUN npm ci --omit=dev --no-audit --no-fund && npm cache clean --force
 
 COPY --from=builder /app/dist ./dist
 
-# Persistent storage for tokens.json and the APNs `.p8` key. Mounted via
-# docker-compose so they survive container rebuilds.
+# Persistent storage for tokens.json, the APNs `.p8` key, and Hue ambience
+# config. Mounted via docker-compose so they survive container rebuilds.
 RUN mkdir -p /app/data
 
 EXPOSE 8787

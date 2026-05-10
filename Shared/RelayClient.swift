@@ -73,7 +73,7 @@ enum RelayClient {
 
     // MARK: - Helpers
 
-    private static func validate(_ response: URLResponse) throws {
+    static func validate(_ response: URLResponse) throws {
         guard let http = response as? HTTPURLResponse else {
             throw URLError(.badServerResponse)
         }
