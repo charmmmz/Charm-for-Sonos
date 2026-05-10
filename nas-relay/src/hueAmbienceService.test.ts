@@ -6,8 +6,12 @@ import { test } from 'node:test';
 import pino from 'pino';
 
 import { HueAmbienceConfigStore } from './hueConfigStore.js';
-import { HueAmbienceService } from './hueAmbienceService.js';
+import { DEFAULT_STOP_GRACE_MS, HueAmbienceService } from './hueAmbienceService.js';
 import type { HueAmbienceRuntimeConfig, HueLightClient, HueRGBColor, HueSnapshot } from './hueTypes.js';
+
+test('default stop grace buffers Sonos track-change transport gaps', () => {
+  assert.equal(DEFAULT_STOP_GRACE_MS, 4_000);
+});
 
 test('album art URI participates in Hue ambience track changes when metadata is empty', async () => {
   const dir = await mkdtemp(path.join(tmpdir(), 'hue-service-'));

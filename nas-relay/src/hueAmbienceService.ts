@@ -16,7 +16,7 @@ import type {
 
 type HuePaletteProvider = (snapshot: HueSnapshot) => Promise<HueRGBColor[]> | HueRGBColor[];
 
-const DEFAULT_STOP_GRACE_MS = 1_500;
+export const DEFAULT_STOP_GRACE_MS = 4_000;
 
 export class HueAmbienceService {
   private config: HueAmbienceRuntimeConfig | null = null;
