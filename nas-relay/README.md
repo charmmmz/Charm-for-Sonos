@@ -32,6 +32,9 @@ external transport once Phase 1 is verified.
    keys blank for now; the relay starts in *dry-run* mode.
 3. **Deploy via Portainer** — Stacks → Add stack, paste the contents of
    `docker-compose.yml`, attach `.env` under "Environment variables", deploy.
+   The stack pulls `ghcr.io/charmmmz/charm-for-sonos/nas-relay:latest`.
+   If the GHCR package is private, log in first with a GitHub personal access
+   token that can read packages.
 4. **Verify**:
    ```bash
    curl http://<qnap-ip>:8787/api/health

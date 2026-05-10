@@ -10,14 +10,14 @@
 #
 # To bring up:
 #   1. cp .env.example .env  (then fill in the values)
-#   2. docker compose up -d --build
+#   2. docker login ghcr.io  (only needed for a private GHCR package)
+#   3. docker compose pull && docker compose up -d
 #   (or paste this file into Portainer → Stacks → New stack, attach the
 #    .env content under "Environment variables".)
 
 services:
   relay:
-    build: .
-    image: sonos-live-activity-relay:latest
+    image: ghcr.io/charmmmz/charm-for-sonos/nas-relay:latest
     container_name: sonos-live-activity-relay
     restart: unless-stopped
     network_mode: host
