@@ -48,7 +48,7 @@ final class MusicAmbienceManager {
     @ObservationIgnored private let targetResolver: HueTargetResolving?
     @ObservationIgnored private let resourceFetcher: HueAmbienceResourceFetching?
     @ObservationIgnored private let relayRuntime: HueAmbienceRelayRuntimeProviding?
-    @ObservationIgnored private let flowIntervalSeconds: TimeInterval
+    @ObservationIgnored private let flowIntervalSecondsOverride: TimeInterval?
     @ObservationIgnored private var lastTrackKey: String?
     @ObservationIgnored private var lastPalette: [HueRGBColor] = []
     @ObservationIgnored private var lastRenderSignature: RenderSignature?
@@ -63,14 +63,14 @@ final class MusicAmbienceManager {
         targetResolver: HueTargetResolving? = nil,
         resourceFetcher: HueAmbienceResourceFetching? = nil,
         relayRuntime: HueAmbienceRelayRuntimeProviding? = nil,
-        flowIntervalSeconds: TimeInterval = 8
+        flowIntervalSeconds: TimeInterval? = nil
     ) {
         self.store = store ?? .shared
         self.renderer = renderer
         self.targetResolver = targetResolver
         self.resourceFetcher = resourceFetcher
         self.relayRuntime = relayRuntime
-        self.flowIntervalSeconds = flowIntervalSeconds
+        self.flowIntervalSecondsOverride = flowIntervalSeconds
         refreshStatus()
     }
 
@@ -193,7 +193,7 @@ final class MusicAmbienceManager {
         renderTask?.cancel()
         renderGeneration += 1
         let generation = renderGeneration
-        let intervalSeconds = flowIntervalSeconds
+        let intervalSeconds = flowIntervalSecondsOverride ?? store.flowSpeed.intervalSeconds
         renderTask = Task { [weak self] in
             do {
                 switch motionStyle {

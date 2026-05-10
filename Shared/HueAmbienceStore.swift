@@ -9,6 +9,7 @@ protocol HueAmbienceStorage: AnyObject {
     var groupStrategyRaw: String? { get set }
     var stopBehaviorRaw: String? { get set }
     var motionStyleRaw: String? { get set }
+    var flowSpeedRaw: String? { get set }
     var statusText: String? { get set }
 }
 
@@ -131,6 +132,22 @@ final class HueAmbienceDefaults: HueAmbienceStorage {
         }
     }
 
+    var flowSpeedRaw: String? {
+        get {
+            if let defaults {
+                return defaults.string(forKey: "hueFlowSpeed")
+            }
+            return SharedStorage.hueFlowSpeedRaw
+        }
+        set {
+            if let defaults {
+                updateOptional(newValue, forKey: "hueFlowSpeed", in: defaults)
+            } else {
+                SharedStorage.hueFlowSpeedRaw = newValue
+            }
+        }
+    }
+
     var statusText: String? {
         get {
             if let defaults {
@@ -218,6 +235,12 @@ final class HueAmbienceStore {
         }
     }
 
+    var flowSpeed: HueAmbienceFlowSpeed {
+        didSet {
+            storage.flowSpeedRaw = flowSpeed.rawValue
+        }
+    }
+
     var statusText: String? {
         didSet {
             storage.statusText = statusText
@@ -237,6 +260,8 @@ final class HueAmbienceStore {
             .flatMap(HueAmbienceStopBehavior.init(rawValue:)) ?? .default
         self.motionStyle = storage.motionStyleRaw
             .flatMap(HueAmbienceMotionStyle.init(rawValue:)) ?? .default
+        self.flowSpeed = storage.flowSpeedRaw
+            .flatMap(HueAmbienceFlowSpeed.init(rawValue:)) ?? .default
         self.statusText = storage.statusText
     }
 

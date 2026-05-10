@@ -94,6 +94,11 @@ final class HueAmbienceStoreTests: XCTestCase {
         XCTAssertEqual(HueAmbienceMotionStyle.default, .flowing)
     }
 
+    func testFlowSpeedDefaultsToSlow() {
+        XCTAssertEqual(HueAmbienceFlowSpeed.default, .slow)
+        XCTAssertEqual(HueAmbienceFlowSpeed.fast.intervalSeconds, 4)
+    }
+
     func testLiveEntertainmentWithoutRuntimeUsesClearUnavailableStatus() {
         XCTAssertEqual(
             HueLiveEntertainmentRuntimeStatus.unavailable.reason,
@@ -142,6 +147,21 @@ final class HueAmbienceStoreTests: XCTestCase {
         let restored = HueAmbienceStore(storage: storage)
 
         XCTAssertEqual(restored.motionStyle, .still)
+    }
+
+    func testStorePersistsFlowSpeed() {
+        let suiteName = "HueAmbienceStoreTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let storage = HueAmbienceDefaults(defaults: defaults)
+        let store = HueAmbienceStore(storage: storage)
+
+        store.flowSpeed = .fast
+
+        let restored = HueAmbienceStore(storage: storage)
+
+        XCTAssertEqual(restored.flowSpeed, .fast)
     }
 
     func testStorePersistsEnabledBridgeMappingsAndStrategy() {

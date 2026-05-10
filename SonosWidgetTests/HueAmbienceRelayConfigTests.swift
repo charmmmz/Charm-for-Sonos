@@ -10,6 +10,7 @@ final class HueAmbienceRelayConfigTests: XCTestCase {
 
         let store = HueAmbienceStore(storage: HueAmbienceDefaults(defaults: defaults))
         store.isEnabled = true
+        store.flowSpeed = .fast
         store.bridge = HueBridgeInfo(id: "bridge-1", ipAddress: "192.168.50.216", name: "Hue Bridge")
         store.updateResources(HueBridgeResources(
             lights: [
@@ -68,6 +69,7 @@ final class HueAmbienceRelayConfigTests: XCTestCase {
         XCTAssertEqual(firstMapping["relayGroupID"] as? String, "192.168.50.25")
         XCTAssertEqual(preferredTarget["kind"] as? String, "entertainmentArea")
         XCTAssertEqual(preferredTarget["id"] as? String, "ent-1")
+        XCTAssertEqual(object["flowIntervalSeconds"] as? Double, 4)
     }
 
     func testRelayConfigRequiresStoredApplicationKey() {

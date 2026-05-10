@@ -95,6 +95,36 @@ enum HueAmbienceMotionStyle: String, Codable, Equatable, Sendable, CaseIterable 
     }
 }
 
+enum HueAmbienceFlowSpeed: String, Codable, Equatable, Sendable, CaseIterable {
+    case slow
+    case medium
+    case fast
+
+    static let `default`: HueAmbienceFlowSpeed = .slow
+
+    var label: String {
+        switch self {
+        case .slow:
+            return "Slow"
+        case .medium:
+            return "Medium"
+        case .fast:
+            return "Fast"
+        }
+    }
+
+    var intervalSeconds: Double {
+        switch self {
+        case .slow:
+            return 8
+        case .medium:
+            return 6
+        case .fast:
+            return 4
+        }
+    }
+}
+
 enum HueLiveEntertainmentRuntimeStatus: Equatable, Sendable {
     case unavailable
     case available

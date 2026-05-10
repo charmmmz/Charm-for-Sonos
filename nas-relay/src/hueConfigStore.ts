@@ -68,6 +68,7 @@ export class HueAmbienceConfigStore {
 }
 
 function normalizeConfig(config: HueAmbienceRuntimeConfig): HueAmbienceRuntimeConfig {
+  const flowIntervalSeconds = intervalOverride() ?? config.flowIntervalSeconds ?? 8;
   return {
     ...config,
     enabled: config.enabled && (process.env.HUE_AMBIENCE_ENABLED ?? 'true') !== 'false',
@@ -87,6 +88,14 @@ function normalizeConfig(config: HueAmbienceRuntimeConfig): HueAmbienceRuntimeCo
     groupStrategy: config.groupStrategy ?? 'allMappedRooms',
     stopBehavior: config.stopBehavior ?? 'leaveCurrent',
     motionStyle: config.motionStyle ?? 'flowing',
-    flowIntervalSeconds: Math.max(config.flowIntervalSeconds ?? 8, 1),
+    flowIntervalSeconds: Math.max(flowIntervalSeconds, 1),
   };
+}
+
+function intervalOverride(): number | undefined {
+  const raw = process.env.HUE_FLOW_INTERVAL_SECONDS;
+  if (!raw || raw.trim().length === 0) return undefined;
+
+  const value = Number(raw);
+  return Number.isFinite(value) ? value : undefined;
 }

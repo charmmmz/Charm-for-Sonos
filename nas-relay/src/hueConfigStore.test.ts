@@ -56,3 +56,22 @@ test('config store status redacts application key', async () => {
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test('config store uses flow interval environment override', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'hue-config-'));
+  const previous = process.env.HUE_FLOW_INTERVAL_SECONDS;
+  process.env.HUE_FLOW_INTERVAL_SECONDS = '4';
+  try {
+    const store = new HueAmbienceConfigStore(dir);
+    await store.save({ ...config, flowIntervalSeconds: 8 });
+
+    assert.equal(store.current?.flowIntervalSeconds, 4);
+  } finally {
+    if (previous === undefined) {
+      delete process.env.HUE_FLOW_INTERVAL_SECONDS;
+    } else {
+      process.env.HUE_FLOW_INTERVAL_SECONDS = previous;
+    }
+    await rm(dir, { recursive: true, force: true });
+  }
+});

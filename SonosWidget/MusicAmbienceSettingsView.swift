@@ -307,6 +307,12 @@ struct HueAmbienceSetupSheet: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
+            Picker("Light Motion Speed", selection: $store.flowSpeed) {
+                ForEach(HueAmbienceFlowSpeed.allCases, id: \.self) { flowSpeed in
+                    Text(flowSpeed.label).tag(flowSpeed)
+                }
+            }
+
             LabeledContent("Live Entertainment", value: HueLiveEntertainmentRuntimeStatus.unavailable.reason)
             Text("Beat-synced Entertainment streaming still needs the NAS runtime. App-only mode uses slow Hue transitions while Charm Player is active.")
                 .font(.caption)

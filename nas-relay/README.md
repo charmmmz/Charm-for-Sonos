@@ -23,6 +23,8 @@ APNs, and the Live Activity updates within another ~1–3 s.
 - Hue Music Ambience config is uploaded from the iOS app. The relay stores the
   Hue app key and assignments in `DATA_DIR/hue-ambience-config.json`, then
   applies slow album-palette REST transitions on Sonos play/track changes.
+  The iOS Light Motion Speed setting controls the flow interval; set
+  `HUE_FLOW_INTERVAL_SECONDS` only when the NAS should override that value.
   True Hue Entertainment DTLS streaming remains a future runtime.
 
 External access (DDNS IPv6 / Cloudflare Tunnel / Tailscale) is intentionally

@@ -31,7 +31,7 @@ struct HueAmbienceRelayConfig: Encodable, Sendable {
         store: HueAmbienceStore,
         credentialStore: HueCredentialStore = HueCredentialStore(),
         sonosSpeakers: [SonosPlayer],
-        flowIntervalSeconds: Double = 8
+        flowIntervalSeconds: Double? = nil
     ) throws {
         guard let bridge = store.bridge else {
             throw HueAmbienceRelayConfigError.missingBridge
@@ -59,7 +59,7 @@ struct HueAmbienceRelayConfig: Encodable, Sendable {
         self.groupStrategy = store.groupStrategy
         self.stopBehavior = store.stopBehavior
         self.motionStyle = store.motionStyle
-        self.flowIntervalSeconds = flowIntervalSeconds
+        self.flowIntervalSeconds = flowIntervalSeconds ?? store.flowSpeed.intervalSeconds
     }
 }
 
