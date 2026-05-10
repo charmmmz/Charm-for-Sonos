@@ -1197,7 +1197,9 @@ final class SearchManager {
         serviceId: String,
         accountId: String
     ) -> AppleMusicForwardAlbumTrackCandidate? {
-        if let type = albumTrack.type?.uppercased(), type != "TRACK" {
+        guard AppleMusicForwardAlbumQueuePlanner.isSupportedAlbumTrackType(
+            itemType: albumTrack.type,
+            resourceType: albumTrack.resource?.type) else {
             return nil
         }
         let objectId = albumTrack.resource?.id?.objectId ?? albumTrack.id ?? ""
@@ -1520,7 +1522,18 @@ final class SearchManager {
         accountId: String,
         backend: SonosControl.Backend
     ) async -> ForwardAlbumQueueAttempt? {
-        guard case .lan = backend else { return nil }
+        guard case .lan = backend else {
+            SonosLog.info(.playback, "Forward album handoff skipped: backend is not LAN")
+            return nil
+        }
+
+        SonosLog.info(
+            .playback,
+            "Forward album handoff attempt: source='\(sourceTrack.title)' artist='\(sourceTrack.artist)' " +
+            "match='\(matchedCandidate.item.title)' matchId='\(matchedCandidate.item.id)' " +
+            "resourceId='\(matchedCandidate.resource.id?.objectId ?? "nil")' " +
+            "container='\(matchedCandidate.resource.container?.name ?? "nil")' " +
+            "containerId='\(matchedCandidate.resource.container?.id?.objectId ?? "nil")'")
 
         guard let albumId = await forwardAlbumId(
             from: matchedCandidate.resource,
@@ -1529,8 +1542,10 @@ final class SearchManager {
             householdId: householdId,
             serviceId: serviceId,
             accountId: accountId) else {
+            SonosLog.info(.playback, "Forward album handoff fallback: album id could not be resolved")
             return nil
         }
+        SonosLog.info(.playback, "Forward album handoff resolved albumId='\(albumId)'")
 
         do {
             let response = try await SonosCloudAPI.browseAlbum(
@@ -1554,14 +1569,31 @@ final class SearchManager {
                     serviceId: serviceId,
                     accountId: accountId)
             }
+            SonosLog.info(
+                .playback,
+                "Forward album handoff browsed album='\(albumTitle)' " +
+                "rawTracks=\(albumTracks.count) candidates=\(candidates.count)")
 
             guard let plan = AppleMusicForwardAlbumQueuePlanner.makePlan(
                 albumTracks: candidates,
                 matchedItem: matchedCandidate.item,
                 sourceTrack: sourceTrack) else {
+                let matchedStoreID = SonosAppleMusicTrackResolver.storeID(fromBrowseItem: matchedCandidate.item) ?? "nil"
+                let preview = candidates.prefix(5).map {
+                    "\($0.ordinal.map(String.init) ?? "?"):\($0.item.title):" +
+                    "\(SonosAppleMusicTrackResolver.storeID(fromBrowseItem: $0.item) ?? "nil")"
+                }.joined(separator: " | ")
+                SonosLog.info(
+                    .playback,
+                    "Forward album handoff fallback: planner returned nil " +
+                    "matchedStoreID=\(matchedStoreID) candidatesPreview=\(preview)")
                 return nil
             }
 
+            SonosLog.info(
+                .playback,
+                "Forward album handoff plan ready: tracks=\(plan.transferredTrackCount) " +
+                "target=\(plan.targetTrackNumber) skipped=\(plan.skippedUnsupportedItemCount)")
             return ForwardAlbumQueueAttempt(plan: plan)
         } catch {
             SonosLog.error(.cloudAPI, "Forward handoff album browse failed: \(error)")
@@ -2240,6 +2272,7 @@ final class SearchManager {
     ) async -> String? {
         if let containerId = browseAlbumId(from: matchedResource.container?.id?.objectId),
            !containerId.isEmpty {
+            SonosLog.info(.playback, "Forward album id from search container: \(containerId)")
             return containerId
         }
 
@@ -2257,7 +2290,11 @@ final class SearchManager {
                 serviceId: serviceId,
                 accountId: accountId,
                 trackObjectId: cleanedTrackObjectId)
-            return browseAlbumId(from: response.item?.albumId)
+            let albumId = browseAlbumId(from: response.item?.albumId)
+            SonosLog.info(
+                .playback,
+                "Forward album id from nowPlaying trackId='\(cleanedTrackObjectId)': \(albumId ?? "nil")")
+            return albumId
         } catch {
             SonosLog.error(.nowPlaying, "Forward handoff album lookup failed: \(error)")
             return nil

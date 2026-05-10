@@ -126,6 +126,21 @@ final class AppleMusicForwardAlbumQueuePlannerTests: XCTestCase {
         XCTAssertNil(plan)
     }
 
+    func testSonosAlbumItemTrackTypeIsPlayableWhenResourceIsTrack() {
+        XCTAssertTrue(
+            AppleMusicForwardAlbumQueuePlanner.isSupportedAlbumTrackType(
+                itemType: "TRACK",
+                resourceType: nil))
+        XCTAssertTrue(
+            AppleMusicForwardAlbumQueuePlanner.isSupportedAlbumTrackType(
+                itemType: "ITEM_TRACK",
+                resourceType: "TRACK"))
+        XCTAssertFalse(
+            AppleMusicForwardAlbumQueuePlanner.isSupportedAlbumTrackType(
+                itemType: "ITEM_TRACK",
+                resourceType: "ALBUM"))
+    }
+
     private func makeCandidate(
         id: String,
         title: String,

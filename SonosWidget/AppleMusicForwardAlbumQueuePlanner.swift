@@ -16,6 +16,22 @@ struct AppleMusicForwardAlbumQueuePlan: Equatable, Sendable {
 enum AppleMusicForwardAlbumQueuePlanner {
     static let defaultMaxItems = 50
 
+    static func isSupportedAlbumTrackType(itemType: String?, resourceType: String?) -> Bool {
+        let normalizedItemType = normalizedType(itemType)
+        let normalizedResourceType = normalizedType(resourceType)
+
+        switch normalizedItemType {
+        case nil:
+            return normalizedResourceType == nil || normalizedResourceType == "TRACK"
+        case "TRACK":
+            return true
+        case "ITEM_TRACK":
+            return normalizedResourceType == "TRACK"
+        default:
+            return false
+        }
+    }
+
     static func makePlan(
         albumTracks: [AppleMusicForwardAlbumTrackCandidate],
         matchedItem: BrowseItem,
@@ -124,5 +140,11 @@ enum AppleMusicForwardAlbumQueuePlanner {
 
     private static func trimmed(_ value: String) -> String {
         value.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func normalizedType(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let trimmedValue = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmedValue.isEmpty ? nil : trimmedValue.uppercased()
     }
 }
