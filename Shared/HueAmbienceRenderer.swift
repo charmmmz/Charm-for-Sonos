@@ -33,12 +33,23 @@ struct StoredHueTargetResolver: HueTargetResolving {
                     continue
                 }
 
+                let bypassesFiltering = target.bypassesFunctionFiltering
                 let lightIDs = area.childLightIDs.filter { lightID in
-                    guard !mapping.excludedLightIDs.contains(lightID),
-                          let light = lightsByID[lightID] else {
+                    guard let light = lightsByID[lightID], light.supportsColor else {
                         return false
                     }
-                    guard Self.area(area, canUse: light, mapping: mapping) else {
+                    guard Self.area(
+                        area,
+                        canUse: light,
+                        mapping: mapping,
+                        bypassesManualOverrides: bypassesFiltering
+                    ) else {
+                        return false
+                    }
+                    if bypassesFiltering {
+                        return true
+                    }
+                    guard !mapping.excludedLightIDs.contains(lightID) else {
                         return false
                     }
 
@@ -67,8 +78,13 @@ struct StoredHueTargetResolver: HueTargetResolving {
     private static func area(
         _ area: HueAreaResource,
         canUse light: HueLightResource,
-        mapping: HueSonosMapping
+        mapping: HueSonosMapping,
+        bypassesManualOverrides: Bool
     ) -> Bool {
+        if bypassesManualOverrides {
+            return true
+        }
+
         if area.kind == .light || mapping.includedLightIDs.contains(light.id) {
             return true
         }

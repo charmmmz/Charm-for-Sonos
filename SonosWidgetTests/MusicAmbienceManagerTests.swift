@@ -618,6 +618,74 @@ final class MusicAmbienceManagerTests: XCTestCase {
         XCTAssertEqual(targets.first?.lightIDs, ["task"])
     }
 
+    func testStoredResolverIncludesFunctionalLightsForEntertainmentAreas() {
+        let resolver = StoredHueTargetResolver(
+            areas: [
+                HueAreaResource(
+                    id: "ent-1",
+                    name: "Playroom Area",
+                    kind: .entertainmentArea,
+                    childLightIDs: ["decorative", "task"],
+                    childDeviceIDs: ["device-decorative"]
+                )
+            ],
+            lights: [
+                makeLight(id: "decorative", ownerID: "device-decorative", function: .decorative),
+                makeLight(id: "task", ownerID: "device-task", function: .functional)
+            ]
+        )
+
+        let targets = resolver.resolveTargets(for: [
+            HueSonosMapping(
+                sonosID: "playroom",
+                sonosName: "Playroom",
+                preferredTarget: .entertainmentArea("ent-1"),
+                excludedLightIDs: ["decorative"],
+                capability: .liveEntertainment
+            )
+        ])
+
+        XCTAssertEqual(targets.first?.lightIDs, ["decorative", "task"])
+    }
+
+    func testStoredResolverKeepsRoomFunctionFilteringAndManualOverrides() {
+        let resolver = StoredHueTargetResolver(
+            areas: [
+                HueAreaResource(
+                    id: "room-1",
+                    name: "Playroom",
+                    kind: .room,
+                    childLightIDs: ["decorative", "task"],
+                    childDeviceIDs: ["device-decorative", "device-task"]
+                )
+            ],
+            lights: [
+                makeLight(id: "decorative", ownerID: "device-decorative", function: .decorative),
+                makeLight(id: "task", ownerID: "device-task", function: .functional)
+            ]
+        )
+
+        let defaultTargets = resolver.resolveTargets(for: [
+            HueSonosMapping(
+                sonosID: "playroom",
+                sonosName: "Playroom",
+                preferredTarget: .room("room-1")
+            )
+        ])
+        XCTAssertEqual(defaultTargets.first?.lightIDs, ["decorative"])
+
+        let manualTargets = resolver.resolveTargets(for: [
+            HueSonosMapping(
+                sonosID: "playroom",
+                sonosName: "Playroom",
+                preferredTarget: .room("room-1"),
+                includedLightIDs: ["task"],
+                excludedLightIDs: ["decorative"]
+            )
+        ])
+        XCTAssertEqual(manualTargets.first?.lightIDs, ["task"])
+    }
+
     func testStoredResolverScopesDuplicateNamedLightsToAreaDevices() {
         let resolver = StoredHueTargetResolver(
             areas: [
@@ -818,13 +886,14 @@ final class MusicAmbienceManagerTests: XCTestCase {
 
     private func makeLight(
         id: String,
+        ownerID: String? = nil,
         function: HueLightFunction,
         functionMetadataResolved: Bool = true
     ) -> HueLightResource {
         HueLightResource(
             id: id,
             name: id,
-            ownerID: nil,
+            ownerID: ownerID,
             supportsColor: true,
             supportsGradient: false,
             supportsEntertainment: false,

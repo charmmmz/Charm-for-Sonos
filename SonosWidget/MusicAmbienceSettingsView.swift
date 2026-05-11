@@ -372,7 +372,7 @@ struct HueAmbienceSetupSheet: View {
         } header: {
             Text("Speaker Assignments")
         } footer: {
-            Text("Choose an Entertainment Area, Room, Zone, or individual Light. Names are only labels; assignments are saved by Hue ID.")
+            Text("Choose an Entertainment Area, Room, or Zone. Names are only labels; assignments are saved by Hue ID.")
         }
     }
 
@@ -607,7 +607,7 @@ private struct HueMappingRow: View {
                 .buttonStyle(.borderless)
             }
 
-            if !areaLights.isEmpty {
+            if showsLightSelection && !areaLights.isEmpty {
                 DisclosureGroup("Lights", isExpanded: $isLightSelectionExpanded) {
                     ForEach(areaLights) { light in
                         Toggle(isOn: Binding(
@@ -650,8 +650,12 @@ private struct HueMappingRow: View {
         return areas.first { $0.ambienceTarget == target }
     }
 
+    private var showsLightSelection: Bool {
+        currentMapping?.preferredTarget?.allowsManualLightSelection == true
+    }
+
     private var areaLights: [HueLightResource] {
-        guard let currentArea else {
+        guard showsLightSelection, let currentArea else {
             return []
         }
 

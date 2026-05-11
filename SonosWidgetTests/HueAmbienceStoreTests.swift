@@ -243,6 +243,13 @@ final class HueAmbienceStoreTests: XCTestCase {
         XCTAssertNil(mapping?.fallbackTarget)
     }
 
+    func testTargetPolicyAllowsManualLightSelectionOnlyForRoomsAndZones() {
+        XCTAssertFalse(HueAmbienceTarget.entertainmentArea("ent-1").allowsManualLightSelection)
+        XCTAssertTrue(HueAmbienceTarget.room("room-1").allowsManualLightSelection)
+        XCTAssertTrue(HueAmbienceTarget.zone("zone-1").allowsManualLightSelection)
+        XCTAssertFalse(HueAmbienceTarget.light("light-1").allowsManualLightSelection)
+    }
+
     func testOlderMappingPayloadDefaultsIncludedLightsToEmpty() throws {
         let data = """
         {
