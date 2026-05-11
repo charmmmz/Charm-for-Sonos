@@ -589,6 +589,52 @@ final class MusicAmbienceManagerTests: XCTestCase {
         XCTAssertEqual(renderer.applyCount, 1)
     }
 
+    func testReceiveDoesNotRefreshFunctionMetadataForEntertainmentAreas() async {
+        let store = makeStore()
+        store.isEnabled = true
+        store.motionStyle = .still
+        store.bridge = HueBridgeInfo(id: "bridge-1", ipAddress: "192.168.1.20", name: "Home Hue")
+        store.updateResources(HueBridgeResources(
+            lights: [
+                makeLight(id: "light-1", function: .unknown, functionMetadataResolved: false)
+            ],
+            areas: [
+                HueAreaResource(
+                    id: "ent-1",
+                    name: "Playroom Area",
+                    kind: .entertainmentArea,
+                    childLightIDs: ["light-1"]
+                )
+            ]
+        ))
+        store.upsertMapping(HueSonosMapping(
+            sonosID: "living",
+            sonosName: "Living",
+            preferredTarget: .entertainmentArea("ent-1"),
+            capability: .liveEntertainment
+        ))
+
+        let fetchExpectation = expectation(description: "does not refresh function metadata")
+        fetchExpectation.isInverted = true
+        let applyExpectation = expectation(description: "applies without function metadata refresh")
+        let renderer = RecordingAmbienceRendering(applyExpectation: applyExpectation)
+        let resourceFetcher = RecordingHueAmbienceResourceFetching(
+            resources: store.hueResources,
+            expectation: fetchExpectation
+        )
+        let manager = MusicAmbienceManager(
+            store: store,
+            renderer: renderer,
+            resourceFetcher: resourceFetcher
+        )
+
+        manager.receive(snapshot: makePlayingSnapshot(trackTitle: "Entertainment Metadata Song"))
+
+        await fulfillment(of: [applyExpectation], timeout: 1)
+        await fulfillment(of: [fetchExpectation], timeout: 0.2)
+        XCTAssertEqual(renderer.applyCount, 1)
+    }
+
     func testStoredResolverAllowsIncludedFunctionalLightsAndExclusionsWin() {
         let resolver = StoredHueTargetResolver(
             areas: [

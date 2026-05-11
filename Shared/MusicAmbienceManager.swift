@@ -85,7 +85,7 @@ final class MusicAmbienceManager {
             resetRenderState()
             setStatus(.syncing("NAS Relay controlling Music Ambience"))
         } else {
-            refreshHueResourcesIfNeeded()
+            refreshHueResourcesIfNeeded(for: store.mappings)
             setStatus(.idle)
         }
     }
@@ -138,8 +138,8 @@ final class MusicAmbienceManager {
             setStatus(.paused("No Hue area mapped"))
             return
         }
-        guard !store.hueResources.needsFunctionMetadataRefresh else {
-            refreshHueResourcesIfNeeded()
+        guard !needsFunctionMetadataRefresh(for: mappings) else {
+            refreshHueResourcesIfNeeded(for: mappings)
             setStatus(.paused("Refreshing Hue lights"))
             return
         }
@@ -253,9 +253,19 @@ final class MusicAmbienceManager {
         return HueAmbienceRenderer(lightClient: HueBridgeClient(bridge: bridge))
     }
 
-    private func refreshHueResourcesIfNeeded() {
+    private func needsFunctionMetadataRefresh(for mappings: [HueSonosMapping]) -> Bool {
+        guard store.hueResources.needsFunctionMetadataRefresh else {
+            return false
+        }
+
+        return mappings.contains { mapping in
+            mapping.effectiveAmbienceTarget?.allowsManualLightSelection == true
+        }
+    }
+
+    private func refreshHueResourcesIfNeeded(for mappings: [HueSonosMapping]) {
         guard resourceRefreshTask == nil,
-              store.hueResources.needsFunctionMetadataRefresh,
+              needsFunctionMetadataRefresh(for: mappings),
               let bridge = store.bridge else {
             return
         }
@@ -350,6 +360,16 @@ final class MusicAmbienceManager {
 
     private static func sleepNanoseconds(for seconds: TimeInterval) -> UInt64 {
         UInt64(max(seconds, 0.1) * 1_000_000_000)
+    }
+}
+
+private extension HueSonosMapping {
+    var effectiveAmbienceTarget: HueAmbienceTarget? {
+        if preferredTarget?.isLegacyDirectLightTarget == true {
+            return fallbackTarget
+        }
+
+        return preferredTarget ?? fallbackTarget
     }
 }
 

@@ -252,8 +252,15 @@ final class HueAmbienceStore {
         self.storage = storage
         self.isEnabled = storage.isEnabled
         self.bridge = Self.decode(HueBridgeInfo.self, from: storage.bridgeData)
-        self.mappings = Self.decode([HueSonosMapping].self, from: storage.mappingsData) ?? []
-        self.hueResources = Self.decode(HueBridgeResources.self, from: storage.resourcesData) ?? .empty
+        let decodedMappings = Self.decode([HueSonosMapping].self, from: storage.mappingsData) ?? []
+        let decodedResources = Self.decode(HueBridgeResources.self, from: storage.resourcesData)
+        let sanitizedResources = decodedResources?.sanitizedForAmbience() ?? .empty
+        self.hueResources = sanitizedResources
+        if sanitizedResources.hasAssignableTargets {
+            self.mappings = decodedMappings.compactMap { $0.sanitized(for: sanitizedResources) }
+        } else {
+            self.mappings = decodedMappings.compactMap { $0.sanitizedTargetShape() }
+        }
         self.groupStrategy = storage.groupStrategyRaw
             .flatMap(HueGroupSyncStrategy.init(rawValue:)) ?? .default
         self.stopBehavior = storage.stopBehaviorRaw
@@ -263,6 +270,13 @@ final class HueAmbienceStore {
         self.flowSpeed = storage.flowSpeedRaw
             .flatMap(HueAmbienceFlowSpeed.init(rawValue:)) ?? .default
         self.statusText = storage.statusText
+
+        if hueResources != (decodedResources ?? .empty) {
+            persistResources()
+        }
+        if mappings != decodedMappings {
+            persistMappings()
+        }
     }
 
     func mapping(forSonosID sonosID: String) -> HueSonosMapping? {
@@ -377,9 +391,38 @@ private extension HueBridgeResources {
             return areas.contains { $0.id == target.id && $0.ambienceTarget == target }
         }
     }
+
+    var hasAssignableTargets: Bool {
+        areas.contains { area in
+            switch area.kind {
+            case .entertainmentArea, .room, .zone:
+                return true
+            case .light:
+                return false
+            }
+        }
+    }
 }
 
 private extension HueSonosMapping {
+    func sanitizedTargetShape() -> HueSonosMapping? {
+        let resolvedPreferred = preferredTarget?.isLegacyDirectLightTarget == true ? nil : preferredTarget
+        let resolvedFallback = fallbackTarget?.isLegacyDirectLightTarget == true ? nil : fallbackTarget
+
+        guard let target = resolvedPreferred ?? resolvedFallback else {
+            return nil
+        }
+
+        var mapping = self
+        mapping.preferredTarget = target
+        mapping.fallbackTarget = resolvedPreferred == nil ? nil : resolvedFallback
+        if target.isEntertainmentArea {
+            mapping.includedLightIDs = []
+            mapping.excludedLightIDs = []
+        }
+        return mapping
+    }
+
     func sanitized(for resources: HueBridgeResources) -> HueSonosMapping? {
         let validLightIDs = Set(resources.lights.map(\.id))
         let resolvedPreferred = resources.containsAssignableTarget(preferredTarget) ? preferredTarget : nil

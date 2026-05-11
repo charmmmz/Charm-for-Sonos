@@ -79,7 +79,7 @@ struct HueAmbienceRelayMapping: Encodable, Equatable, Sendable {
         self.relayGroupID = relayGroupID
         self.preferredTarget = mapping.preferredTarget.map(HueAmbienceRelayTarget.init)
         self.fallbackTarget = mapping.fallbackTarget.map(HueAmbienceRelayTarget.init)
-        if mapping.preferredTarget?.isEntertainmentArea == true {
+        if mapping.effectiveRelayTarget?.isEntertainmentArea == true {
             self.includedLightIDs = []
             self.excludedLightIDs = []
         } else {
@@ -87,6 +87,15 @@ struct HueAmbienceRelayMapping: Encodable, Equatable, Sendable {
             self.excludedLightIDs = mapping.excludedLightIDs.sorted()
         }
         self.capability = mapping.capability
+    }
+}
+
+private extension HueSonosMapping {
+    var effectiveRelayTarget: HueAmbienceTarget? {
+        if preferredTarget?.isLegacyDirectLightTarget == true {
+            return fallbackTarget
+        }
+        return preferredTarget ?? fallbackTarget
     }
 }
 

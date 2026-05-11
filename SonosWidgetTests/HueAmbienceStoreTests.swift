@@ -243,6 +243,48 @@ final class HueAmbienceStoreTests: XCTestCase {
         XCTAssertNil(mapping?.fallbackTarget)
     }
 
+    func testStoreNormalizesPersistedLegacyDirectLightMappingsOnLoad() {
+        let suiteName = "HueAmbienceStoreTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let storage = HueAmbienceDefaults(defaults: defaults)
+        let store = HueAmbienceStore(storage: storage)
+        store.updateResources(HueBridgeResources(
+            lights: [
+                HueLightResource(
+                    id: "light-1",
+                    name: "Desk Lamp",
+                    ownerID: "device-1",
+                    supportsColor: true,
+                    supportsGradient: false,
+                    supportsEntertainment: true
+                )
+            ],
+            areas: [
+                HueAreaResource(
+                    id: "room-1",
+                    name: "Playroom",
+                    kind: .room,
+                    childLightIDs: ["light-1"],
+                    childDeviceIDs: ["device-1"]
+                )
+            ]
+        ))
+        store.upsertMapping(HueSonosMapping(
+            sonosID: "playroom",
+            sonosName: "Playroom",
+            preferredTarget: .light("light-1"),
+            fallbackTarget: .room("room-1")
+        ))
+
+        let restored = HueAmbienceStore(storage: storage)
+        let mapping = restored.mapping(forSonosID: "playroom")
+
+        XCTAssertEqual(mapping?.preferredTarget, .room("room-1"))
+        XCTAssertNil(mapping?.fallbackTarget)
+    }
+
     func testTargetPolicyAllowsManualLightSelectionOnlyForRoomsAndZones() {
         XCTAssertFalse(HueAmbienceTarget.entertainmentArea("ent-1").allowsManualLightSelection)
         XCTAssertTrue(HueAmbienceTarget.room("room-1").allowsManualLightSelection)
