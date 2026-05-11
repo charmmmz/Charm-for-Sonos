@@ -7,6 +7,8 @@ import pino from 'pino';
 
 import { HueAmbienceConfigStore } from './hueConfigStore.js';
 import { DEFAULT_STOP_GRACE_MS, HueAmbienceService } from './hueAmbienceService.js';
+import type { HueAmbienceFrame } from './hueAmbienceFrames.js';
+import type { HueAmbienceRenderer } from './hueFrameRenderer.js';
 import type { HueAmbienceRuntimeConfig, HueLightClient, HueRGBColor, HueSnapshot } from './hueTypes.js';
 
 test('default stop grace buffers Sonos track-change transport gaps', () => {
@@ -109,6 +111,70 @@ test('playing snapshots cancel a pending stop before lights are turned off', asy
   }
 });
 
+test('same track resumes pending Hue ambience start before stop grace and still renders', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'hue-service-'));
+  try {
+    const store = new HueAmbienceConfigStore(dir);
+    await store.save({ ...config, stopBehavior: 'turnOff' });
+    const client = new RecordingHueLightClient();
+    const pendingPalette = deferred<HueRGBColor[]>();
+    const service = new HueAmbienceService(
+      store,
+      pino({ enabled: false }),
+      () => client,
+      () => pendingPalette.promise,
+      50,
+    );
+    await service.load();
+
+    const playing = snapshot('/art-one.jpg');
+    service.receiveSnapshot(playing);
+    await waitFor(() => service.status().runtimeActive === true);
+
+    service.receiveSnapshot({ ...playing, isPlaying: false });
+    await new Promise(resolve => setTimeout(resolve, 5));
+
+    service.receiveSnapshot(playing);
+    pendingPalette.resolve([{ r: 0, g: 0, b: 1 }]);
+
+    await waitFor(() => client.updates.length === 1);
+    assert.equal(service.status().runtimeActive, true);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('same track retries Hue ambience render after initial render failure', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'hue-service-'));
+  try {
+    const store = new HueAmbienceConfigStore(dir);
+    await store.save(config);
+    const renderer = new FailingOnceHueAmbienceRenderer();
+    const service = new HueAmbienceService(
+      store,
+      pino({ enabled: false }),
+      () => new RecordingHueLightClient(),
+      () => [{ r: 1, g: 0, b: 0 }],
+      1,
+      () => renderer,
+    );
+    await service.load();
+
+    const playing = snapshot('/art-one.jpg');
+    service.receiveSnapshot(playing);
+    await waitFor(() => renderer.renderAttempts === 1);
+
+    service.receiveSnapshot(playing);
+    await waitFor(() => renderer.renderAttempts === 2);
+
+    assert.equal(renderer.renderedFrames.length, 1);
+    assert.equal(service.status().renderMode, 'clipFallback');
+    assert.equal(service.status().runtimeActive, true);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test('idle snapshots from other Sonos groups do not stop the active Hue ambience group', async () => {
   const dir = await mkdtemp(path.join(tmpdir(), 'hue-service-'));
   try {
@@ -171,6 +237,59 @@ test('non-music playing snapshots do not start Hue ambience', async () => {
   }
 });
 
+test('service reports streaming-ready mode for entertainment targets through CLIP fallback', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'hue-service-'));
+  try {
+    const store = new HueAmbienceConfigStore(dir);
+    await store.save(entertainmentConfig());
+    const client = new RecordingHueLightClient();
+    const service = new HueAmbienceService(
+      store,
+      pino({ enabled: false }),
+      () => client,
+      () => [{ r: 1, g: 0, b: 0 }, { r: 0, g: 0, b: 1 }],
+    );
+    await service.load();
+
+    service.receiveSnapshot(snapshot('/entertainment-art.jpg'));
+    await waitFor(() => client.updates.length === 1);
+
+    const status = service.status();
+    assert.equal(status.renderMode, 'streamingReady');
+    assert.equal(status.entertainmentTargetActive, true);
+    assert.equal(status.entertainmentMetadataComplete, true);
+    assert.deepEqual(status.activeTargetIds, ['ent-1']);
+    assert.ok(status.lastFrameAt);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('service reports incomplete entertainment metadata without selecting unrelated lights', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'hue-service-'));
+  try {
+    const store = new HueAmbienceConfigStore(dir);
+    await store.save(entertainmentConfig({ entertainmentChannels: [] }));
+    const client = new RecordingHueLightClient();
+    const service = new HueAmbienceService(
+      store,
+      pino({ enabled: false }),
+      () => client,
+      () => [{ r: 1, g: 0, b: 0 }, { r: 0, g: 0, b: 1 }],
+    );
+    await service.load();
+
+    service.receiveSnapshot(snapshot('/entertainment-art.jpg'));
+    await waitFor(() => client.updates.length === 1);
+
+    assert.equal(service.status().renderMode, 'streamingReady');
+    assert.equal(service.status().entertainmentMetadataComplete, false);
+    assert.deepEqual(client.updates.map(update => update.id), ['light-1']);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 const config: HueAmbienceRuntimeConfig = {
   enabled: true,
   bridge: { id: 'bridge-1', ipAddress: '192.168.50.216', name: 'Hue Bridge' },
@@ -214,6 +333,58 @@ const config: HueAmbienceRuntimeConfig = {
   flowIntervalSeconds: 8,
 };
 
+function entertainmentConfig(
+  areaOverrides: Partial<HueAmbienceRuntimeConfig['resources']['areas'][number]> = {},
+): HueAmbienceRuntimeConfig {
+  return {
+    ...config,
+    resources: {
+      lights: [
+        {
+          id: 'light-1',
+          name: 'Gradient Lamp',
+          supportsColor: true,
+          supportsGradient: true,
+          supportsEntertainment: true,
+          function: 'decorative',
+          functionMetadataResolved: true,
+        },
+        {
+          id: 'light-unrelated',
+          name: 'Unrelated Lamp',
+          supportsColor: true,
+          supportsGradient: false,
+          supportsEntertainment: false,
+          function: 'decorative',
+          functionMetadataResolved: true,
+        },
+      ],
+      areas: [
+        {
+          id: 'ent-1',
+          name: 'Entertainment Area',
+          kind: 'entertainmentArea',
+          childLightIDs: ['light-1'],
+          entertainmentChannels: [{ id: '0', lightID: 'light-1', serviceID: 'svc-1' }],
+          ...areaOverrides,
+        },
+      ],
+    },
+    mappings: [
+      {
+        sonosID: 'office',
+        sonosName: 'Office',
+        relayGroupID: '192.168.50.25',
+        preferredTarget: { kind: 'entertainmentArea', id: 'ent-1' },
+        fallbackTarget: null,
+        includedLightIDs: [],
+        excludedLightIDs: [],
+        capability: 'liveEntertainment',
+      },
+    ],
+  };
+}
+
 function snapshot(albumArtUri: string): HueSnapshot {
   return {
     groupId: '192.168.50.25',
@@ -235,6 +406,24 @@ class RecordingHueLightClient implements HueLightClient {
 
   async updateLight(id: string, body: unknown): Promise<void> {
     this.updates.push({ id, body });
+  }
+}
+
+class FailingOnceHueAmbienceRenderer implements HueAmbienceRenderer {
+  renderAttempts = 0;
+  renderedFrames: HueAmbienceFrame[] = [];
+  stoppedFrames: HueAmbienceFrame[] = [];
+
+  async render(frame: HueAmbienceFrame): Promise<void> {
+    this.renderAttempts += 1;
+    if (this.renderAttempts === 1) {
+      throw new Error('render failed');
+    }
+    this.renderedFrames.push(frame);
+  }
+
+  async stop(frame: HueAmbienceFrame): Promise<void> {
+    this.stoppedFrames.push(frame);
   }
 }
 

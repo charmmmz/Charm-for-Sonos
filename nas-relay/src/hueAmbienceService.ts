@@ -1,11 +1,13 @@
 import type { Logger } from 'pino';
 
 import { HueClipClient } from './hueClient.js';
+import { buildHueAmbienceFrame, type HueAmbienceFrame } from './hueAmbienceFrames.js';
 import type { HueAmbienceConfigStore } from './hueConfigStore.js';
 import { paletteForSnapshot } from './hueAlbumArtPalette.js';
-import { rotatePalette } from './huePalette.js';
-import { applyHuePalette, resolveHueTargets, stopHueTargets } from './hueRenderer.js';
+import { ClipHueAmbienceRenderer, type HueAmbienceRenderer } from './hueFrameRenderer.js';
+import { resolveHueTargets } from './hueRenderer.js';
 import type {
+  HueAmbienceRenderMode,
   HueAmbienceRuntimeConfig,
   HueAmbienceServiceStatus,
   HueLightClient,
@@ -27,6 +29,12 @@ export class HueAmbienceService {
   private activeGroupId: string | null = null;
   private lastError: string | null = null;
   private runID = 0;
+  private activeFrame: HueAmbienceFrame | null = null;
+  private pendingStopFrame: HueAmbienceFrame | null = null;
+  private lastFrameAt: string | null = null;
+  private activeRenderMode: HueAmbienceRenderMode | null = null;
+  private entertainmentTargetActive = false;
+  private activeEntertainmentMetadataComplete = false;
 
   constructor(
     private readonly store: HueAmbienceConfigStore,
@@ -35,6 +43,10 @@ export class HueAmbienceService {
       new HueClipClient(config.bridge, config.applicationKey),
     private readonly paletteProvider: HuePaletteProvider = paletteForSnapshot,
     private readonly stopGraceMs = DEFAULT_STOP_GRACE_MS,
+    private readonly rendererFactory: (
+      config: HueAmbienceRuntimeConfig,
+      client: HueLightClient,
+    ) => HueAmbienceRenderer = (_config, client) => new ClipHueAmbienceRenderer(client),
   ) {}
 
   async load(): Promise<void> {
@@ -72,6 +84,11 @@ export class HueAmbienceService {
       activeGroupId: this.activeGroupId,
       lastTrackKey: this.activeTrackKey,
       lastError: this.lastError,
+      activeTargetIds: this.activeTargets.map(target => target.area.id),
+      renderMode: this.activeRenderMode,
+      entertainmentTargetActive: this.entertainmentTargetActive,
+      entertainmentMetadataComplete: this.activeEntertainmentMetadataComplete,
+      lastFrameAt: this.lastFrameAt,
     };
   }
 
@@ -114,7 +131,7 @@ export class HueAmbienceService {
       snapshot.album,
       snapshot.albumArtUri,
     ].join('|');
-    if (trackKey === this.activeTrackKey && this.activeTargets.length > 0) {
+    if (trackKey === this.activeTrackKey && this.activeTargets.length > 0 && this.activeFrame) {
       return;
     }
 
@@ -138,28 +155,47 @@ export class HueAmbienceService {
     this.lastError = null;
 
     const client = this.clientFactory(config);
+    const renderer = this.rendererFactory(config, client);
+    const intervalSeconds = Math.max(config.flowIntervalSeconds, 1);
+    const transitionSeconds = config.motionStyle === 'flowing' ? intervalSeconds : 4;
+    this.pendingStopFrame = this.buildStopFrame(targets, snapshot, transitionSeconds);
+
     const palette = await this.paletteProvider(snapshot);
     if (!this.isCurrentRun(runID)) return;
 
-    const intervalSeconds = Math.max(config.flowIntervalSeconds, 1);
-
     let step = 0;
-    const apply = async () => {
-      if (!this.isCurrentRun(runID)) return;
+    const apply = async (): Promise<boolean> => {
+      if (!this.isCurrentRun(runID)) return false;
       try {
-        const nextPalette = config.motionStyle === 'flowing'
-          ? rotatePalette(palette, step)
-          : palette;
-        await applyHuePalette(client, targets, nextPalette, config.motionStyle === 'flowing' ? intervalSeconds : 4);
+        const frame = buildHueAmbienceFrame({
+          targets,
+          palette,
+          snapshot,
+          phase: config.motionStyle === 'flowing' ? step : 0,
+          transitionSeconds,
+          reason: step === 0 ? 'trackChange' : 'steady',
+        });
+        await renderer.render(frame);
+        this.activeFrame = frame;
+        this.activeRenderMode = frame.mode;
+        this.entertainmentTargetActive = frame.targets.some(target => target.area.kind === 'entertainmentArea');
+        this.activeEntertainmentMetadataComplete = frame.metadataComplete;
+        this.lastFrameAt = frame.createdAt.toISOString();
         step += 1;
+        return true;
       } catch (err) {
         this.lastError = err instanceof Error ? err.message : String(err);
         this.log.warn({ err, groupId: snapshot.groupId }, 'Hue ambience update failed');
+        return false;
       }
     };
 
-    await apply();
+    const initialRenderSucceeded = await apply();
     if (!this.isCurrentRun(runID)) return;
+    if (!initialRenderSucceeded) {
+      this.clearActiveState();
+      return;
+    }
 
     if (config.motionStyle === 'flowing' && palette.length > 1) {
       this.activeTimer = setInterval(() => {
@@ -175,21 +211,45 @@ export class HueAmbienceService {
     }
 
     const config = this.config;
-    const targets = this.activeTargets;
-    this.activeTargets = [];
-    this.activeTrackKey = null;
-    this.activeGroupId = null;
+    const frame = this.activeFrame ?? this.pendingStopFrame;
+    this.clearActiveState();
 
-    if (!applyStopBehavior || !config || config.stopBehavior !== 'turnOff' || targets.length === 0) {
+    if (!applyStopBehavior || !config || config.stopBehavior !== 'turnOff' || !frame) {
       return;
     }
 
     try {
-      await stopHueTargets(this.clientFactory(config), targets);
+      await this.rendererFactory(config, this.clientFactory(config)).stop({ ...frame, reason: 'stop' });
     } catch (err) {
       this.lastError = err instanceof Error ? err.message : String(err);
       this.log.warn({ err }, 'Hue ambience stop failed');
     }
+  }
+
+  private clearActiveState(): void {
+    this.activeTargets = [];
+    this.activeTrackKey = null;
+    this.activeGroupId = null;
+    this.activeFrame = null;
+    this.pendingStopFrame = null;
+    this.activeRenderMode = null;
+    this.entertainmentTargetActive = false;
+    this.activeEntertainmentMetadataComplete = false;
+  }
+
+  private buildStopFrame(
+    targets: HueResolvedAmbienceTarget[],
+    snapshot: HueSnapshot,
+    transitionSeconds: number,
+  ): HueAmbienceFrame {
+    return buildHueAmbienceFrame({
+      targets,
+      palette: [],
+      snapshot,
+      phase: 0,
+      transitionSeconds,
+      reason: 'stop',
+    });
   }
 
   private scheduleStopActive(): void {
