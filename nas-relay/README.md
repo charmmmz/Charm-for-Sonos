@@ -97,6 +97,9 @@ requires for Live Activity pushes.
 | DELETE | `/api/hue-ambience/config`            | —                                                               | Removes stored Hue config and stops active ambience      |
 | POST   | `/api/cs2/gamestate`                  | Valve CS2 Game State Integration JSON                           | Receives and caches the latest CS2 state per SteamID     |
 | GET    | `/api/cs2/status`                     | —                                                               | Summarized latest CS2 state for each connected SteamID   |
+| GET    | `/api/cs2/debug/recent`               | —                                                               | Recent raw CS2 payload samples for field inspection      |
+| DELETE | `/api/cs2/debug/recent`               | —                                                               | Clears recent CS2 debug samples                          |
+| GET    | `/api/cs2/debug/stream`               | —                                                               | SSE stream of raw CS2 payload samples as they arrive     |
 
 ### Counter-Strike 2 Game State Integration
 
@@ -136,6 +139,17 @@ curl http://<relay-ip-or-hostname>:8787/api/cs2/status
 
 You should see a `providers[]` entry with the provider SteamID, player name,
 team, health, flash/burning values, bomb state, and map name.
+
+For field research, clear existing samples and then listen to the live debug
+stream while performing one action at a time in game:
+
+```bash
+curl -X DELETE http://<relay-ip-or-hostname>:8787/api/cs2/debug/recent
+curl -N http://<relay-ip-or-hostname>:8787/api/cs2/debug/stream
+```
+
+Each `event: state` message contains the raw Valve GSI payload plus relay
+metadata such as the provider SteamID, receive time, and request source IP.
 
 ### Internal Sonos API (for `nas-agent`)
 

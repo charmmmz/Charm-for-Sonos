@@ -71,10 +71,22 @@ export interface Cs2GameStatePayload {
 export interface Cs2GameStateSnapshot {
   providerSteamId: string;
   receivedAt: Date;
+  sourceIp?: string;
   provider: Cs2Provider;
   map?: Cs2Map;
   round?: Cs2Round;
   player?: Cs2Player;
+  payload: Cs2GameStatePayload;
+}
+
+export interface Cs2GameStateReceiveMetadata {
+  sourceIp?: string;
+}
+
+export interface Cs2DebugSample {
+  providerSteamId: string;
+  receivedAt: string;
+  sourceIp?: string;
   payload: Cs2GameStatePayload;
 }
 

@@ -81,6 +81,33 @@ test('CS2 game state service stores the latest payload by provider SteamID', () 
   assert.equal(events.length, 1);
 });
 
+test('CS2 game state service keeps bounded raw debug samples', () => {
+  const service = new Cs2GameStateService({ debugSampleLimit: 2 });
+
+  service.receive(samplePayload, { sourceIp: '192.168.50.10' });
+  service.receive({
+    ...samplePayload,
+    provider: { ...samplePayload.provider, steamid: '76561197981496356' },
+    player: { ...samplePayload.player, name: 'Second' },
+  });
+  service.receive({
+    ...samplePayload,
+    provider: { ...samplePayload.provider, steamid: '76561197981496357' },
+    player: { ...samplePayload.player, name: 'Third' },
+  });
+
+  const samples = service.debugSamples();
+  assert.equal(samples.length, 2);
+  assert.deepEqual(samples.map(sample => sample.providerSteamId), [
+    '76561197981496356',
+    '76561197981496357',
+  ]);
+  assert.equal(samples[1]?.payload.player?.name, 'Third');
+
+  service.clearDebugSamples();
+  assert.deepEqual(service.debugSamples(), []);
+});
+
 test('CS2 router accepts Valve GSI POST payloads and exposes status', async () => {
   const app = express();
   const service = new Cs2GameStateService();
@@ -137,6 +164,95 @@ test('CS2 router accepts Valve GSI POST payloads and exposes status', async () =
   }
 });
 
+test('CS2 router exposes recent raw debug payloads and can clear them', async () => {
+  const app = express();
+  const service = new Cs2GameStateService();
+  app.use(express.json());
+  app.use('/api', createCs2GameStateRouter(service, pino({ enabled: false })));
+
+  const server = app.listen(0);
+  await new Promise<void>(resolve => server.once('listening', resolve));
+  const address = server.address();
+  assert(address && typeof address === 'object');
+  const baseURL = `http://127.0.0.1:${address.port}`;
+
+  try {
+    await fetch(`${baseURL}/api/cs2/gamestate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(samplePayload),
+    });
+
+    const recentResponse = await fetch(`${baseURL}/api/cs2/debug/recent`);
+    assert.equal(recentResponse.status, 200);
+    const recent = await recentResponse.json() as {
+      ok: boolean;
+      samples: Array<{
+        providerSteamId: string;
+        sourceIp?: string;
+        payload: Cs2GameStatePayload;
+      }>;
+    };
+    assert.equal(recent.ok, true);
+    assert.equal(recent.samples.length, 1);
+    assert.equal(recent.samples[0]?.providerSteamId, '76561197981496355');
+    assert.equal(recent.samples[0]?.payload.player?.state?.flashed, 128);
+
+    const clearResponse = await fetch(`${baseURL}/api/cs2/debug/recent`, { method: 'DELETE' });
+    assert.equal(clearResponse.status, 200);
+    assert.deepEqual(await clearResponse.json(), { ok: true });
+
+    const emptyResponse = await fetch(`${baseURL}/api/cs2/debug/recent`);
+    const empty = await emptyResponse.json() as { samples: unknown[] };
+    assert.deepEqual(empty.samples, []);
+  } finally {
+    await new Promise<void>((resolve, reject) => {
+      server.close(error => error ? reject(error) : resolve());
+    });
+  }
+});
+
+test('CS2 debug stream emits state events for new payloads', async () => {
+  const app = express();
+  const service = new Cs2GameStateService();
+  app.use(express.json());
+  app.use('/api', createCs2GameStateRouter(service, pino({ enabled: false })));
+
+  const server = app.listen(0);
+  await new Promise<void>(resolve => server.once('listening', resolve));
+  const address = server.address();
+  assert(address && typeof address === 'object');
+  const baseURL = `http://127.0.0.1:${address.port}`;
+  const abortController = new AbortController();
+
+  try {
+    const streamResponse = await fetch(`${baseURL}/api/cs2/debug/stream`, {
+      signal: abortController.signal,
+    });
+    assert.equal(streamResponse.status, 200);
+    assert.equal(streamResponse.headers.get('content-type'), 'text/event-stream; charset=utf-8');
+    assert(streamResponse.body);
+
+    const reader = streamResponse.body.getReader();
+    await fetch(`${baseURL}/api/cs2/gamestate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(samplePayload),
+    });
+
+    const text = await readUntil(reader, 'event: state');
+    assert.match(text, /event: state/);
+    assert.match(text, /"providerSteamId":"76561197981496355"/);
+    assert.match(text, /"flashed":128/);
+    await reader.cancel();
+  } finally {
+    abortController.abort();
+    await new Promise<void>((resolve, reject) => {
+      server.close(error => error ? reject(error) : resolve());
+    });
+  }
+});
+
 test('CS2 router rejects payloads without provider SteamID', async () => {
   const app = express();
   app.use(express.json());
@@ -165,3 +281,18 @@ test('CS2 router rejects payloads without provider SteamID', async () => {
     });
   }
 });
+
+async function readUntil(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  expectedText: string,
+): Promise<string> {
+  const decoder = new TextDecoder();
+  let text = '';
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    text += decoder.decode(value, { stream: true });
+    if (text.includes(expectedText)) return text;
+  }
+  return text;
+}

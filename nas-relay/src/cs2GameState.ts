@@ -1,6 +1,12 @@
 import { EventEmitter } from 'node:events';
 
-import type { Cs2GameStatePayload, Cs2GameStateSnapshot, Cs2GameStateStatus } from './cs2Types.js';
+import type {
+  Cs2DebugSample,
+  Cs2GameStatePayload,
+  Cs2GameStateReceiveMetadata,
+  Cs2GameStateSnapshot,
+  Cs2GameStateStatus,
+} from './cs2Types.js';
 
 export class Cs2GameStateValidationError extends Error {
   constructor(message: string) {
@@ -10,13 +16,21 @@ export class Cs2GameStateValidationError extends Error {
 }
 
 export class Cs2GameStateService extends EventEmitter {
+  private readonly debugSampleLimit: number;
   private readonly snapshots = new Map<string, Cs2GameStateSnapshot>();
+  private readonly recentDebugSamples: Cs2DebugSample[] = [];
 
-  receive(payload: Cs2GameStatePayload): Cs2GameStateSnapshot {
+  constructor(options: { debugSampleLimit?: number } = {}) {
+    super();
+    this.debugSampleLimit = Math.max(0, Math.floor(options.debugSampleLimit ?? 25));
+  }
+
+  receive(payload: Cs2GameStatePayload, metadata: Cs2GameStateReceiveMetadata = {}): Cs2GameStateSnapshot {
     const providerSteamId = providerSteamIdFrom(payload);
     const snapshot: Cs2GameStateSnapshot = {
       providerSteamId,
       receivedAt: new Date(),
+      sourceIp: metadata.sourceIp,
       provider: payload.provider!,
       map: payload.map,
       round: payload.round,
@@ -25,7 +39,10 @@ export class Cs2GameStateService extends EventEmitter {
     };
 
     this.snapshots.set(providerSteamId, snapshot);
+    const debugSample = this.toDebugSample(snapshot);
+    this.rememberDebugSample(debugSample);
     this.emit('state', snapshot);
+    this.emit('debug-sample', debugSample);
     return snapshot;
   }
 
@@ -39,6 +56,14 @@ export class Cs2GameStateService extends EventEmitter {
 
   providers(): string[] {
     return Array.from(this.snapshots.keys());
+  }
+
+  debugSamples(): Cs2DebugSample[] {
+    return [...this.recentDebugSamples];
+  }
+
+  clearDebugSamples(): void {
+    this.recentDebugSamples.length = 0;
   }
 
   status(): Cs2GameStateStatus[] {
@@ -56,6 +81,23 @@ export class Cs2GameStateService extends EventEmitter {
         map: snapshot.map?.name,
       });
     });
+  }
+
+  private toDebugSample(snapshot: Cs2GameStateSnapshot): Cs2DebugSample {
+    return withoutUndefined({
+      providerSteamId: snapshot.providerSteamId,
+      receivedAt: snapshot.receivedAt.toISOString(),
+      sourceIp: snapshot.sourceIp,
+      payload: snapshot.payload,
+    });
+  }
+
+  private rememberDebugSample(sample: Cs2DebugSample): void {
+    if (this.debugSampleLimit === 0) return;
+    this.recentDebugSamples.push(sample);
+    while (this.recentDebugSamples.length > this.debugSampleLimit) {
+      this.recentDebugSamples.shift();
+    }
   }
 }
 
