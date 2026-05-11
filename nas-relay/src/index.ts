@@ -11,6 +11,8 @@ import { TokenStore } from './tokenStore.js';
 import { HueAmbienceConfigStore } from './hueConfigStore.js';
 import { HueAmbienceService } from './hueAmbienceService.js';
 import { createHueAmbienceRouter } from './hueRoutes.js';
+import { Cs2GameStateService } from './cs2GameState.js';
+import { createCs2GameStateRouter } from './cs2Routes.js';
 import type { LiveActivityContentState, RegisterRequest, SonosGroupSnapshot } from './types.js';
 
 const log = pino({
@@ -36,6 +38,7 @@ async function main(): Promise<void> {
     log.child({ module: 'hue-ambience' }),
   );
   await hueAmbience.load();
+  const cs2GameState = new Cs2GameStateService();
 
   const apns = await ApnsClient.create(
     {
@@ -94,6 +97,7 @@ async function main(): Promise<void> {
 
   app.use('/internal', internalAuthMiddleware(log), createInternalSonosRouter(sonos, log));
   app.use('/api', createHueAmbienceRouter(hueAmbience, log));
+  app.use('/api', createCs2GameStateRouter(cs2GameState, log.child({ module: 'cs2' })));
 
   app.get('/api/health', (_req, res) => {
     res.json({
@@ -107,6 +111,9 @@ async function main(): Promise<void> {
         musicAmbienceEligible: s.musicAmbienceEligible,
       })),
       hueAmbience: hueAmbience.status(),
+      cs2: {
+        providers: cs2GameState.status(),
+      },
     });
   });
 

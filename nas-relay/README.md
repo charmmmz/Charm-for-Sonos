@@ -26,6 +26,9 @@ APNs, and the Live Activity updates within another ~1–3 s.
   The iOS Light Motion Speed setting controls the flow interval; set
   `HUE_FLOW_INTERVAL_SECONDS` only when the NAS should override that value.
   True Hue Entertainment DTLS streaming remains a future runtime.
+- Counter-Strike 2 Game State Integration payloads can be posted directly to
+  the relay. For now the relay validates and caches the latest payload per
+  provider SteamID; Hue Entertainment reactions will be layered on top later.
 
 External access (DDNS IPv6 / Cloudflare Tunnel / Tailscale) is intentionally
 out of scope here; bring up the LAN path first, then layer on whichever
@@ -92,6 +95,47 @@ requires for Live Activity pushes.
 | GET    | `/api/hue-ambience/status`            | —                                                               | Hue runtime status without exposing the Hue app key      |
 | PUT    | `/api/hue-ambience/config`            | complete config uploaded by iOS                                 | Stores Bridge key, resources, assignments, and settings  |
 | DELETE | `/api/hue-ambience/config`            | —                                                               | Removes stored Hue config and stops active ambience      |
+| POST   | `/api/cs2/gamestate`                  | Valve CS2 Game State Integration JSON                           | Receives and caches the latest CS2 state per SteamID     |
+| GET    | `/api/cs2/status`                     | —                                                               | Summarized latest CS2 state for each connected SteamID   |
+
+### Counter-Strike 2 Game State Integration
+
+Create this file on the gaming PC:
+
+```
+C:\Program Files (x86)\Steam\steamapps\common\Counter-Strike Global Offensive\game\csgo\cfg\gamestate_integration_charm.cfg
+```
+
+Use the relay host or NAS IP in the `uri`:
+
+```text
+"Charm Sonos Relay"
+{
+ "uri" "http://<relay-ip-or-hostname>:8787/api/cs2/gamestate"
+ "timeout" "5.0"
+ "buffer" "0.1"
+ "throttle" "0.1"
+ "heartbeat" "5.0"
+ "data"
+ {
+   "provider" "1"
+   "map" "1"
+   "round" "1"
+   "player_id" "1"
+   "player_state" "1"
+   "player_match_stats" "1"
+ }
+}
+```
+
+After launching CS2 and joining a match, verify ingestion:
+
+```bash
+curl http://<relay-ip-or-hostname>:8787/api/cs2/status
+```
+
+You should see a `providers[]` entry with the provider SteamID, player name,
+team, health, flash/burning values, bomb state, and map name.
 
 ### Internal Sonos API (for `nas-agent`)
 
@@ -123,6 +167,9 @@ nas-relay/
 ├── data/                   # mounted volume — tokens.json, apns.p8 live here
 └── src/
     ├── index.ts            # Express + wire-up
+    ├── cs2GameState.ts     # CS2 GSI state cache and event emitter
+    ├── cs2Routes.ts        # /api/cs2/*
+    ├── cs2Types.ts         # CS2 GSI payload models
     ├── hueAmbienceService.ts # Sonos snapshots → Hue ambience runtime
     ├── hueClient.ts        # Hue CLIP v2 client
     ├── hueConfigStore.ts   # disk-backed Hue config
