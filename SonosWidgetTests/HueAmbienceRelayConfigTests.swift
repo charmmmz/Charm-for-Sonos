@@ -85,6 +85,64 @@ final class HueAmbienceRelayConfigTests: XCTestCase {
         XCTAssertEqual(firstChannel["serviceID"] as? String, "svc-1")
     }
 
+    func testRelayConfigDoesNotEncodeEntertainmentLightOverrides() throws {
+        let suiteName = "HueAmbienceRelayConfigTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let store = HueAmbienceStore(storage: HueAmbienceDefaults(defaults: defaults))
+        let bridge = HueBridgeInfo(id: "bridge-1", ipAddress: "192.168.1.2", name: "Hue Bridge")
+        store.bridge = bridge
+        store.updateResources(HueBridgeResources(
+            lights: [
+                HueLightResource(
+                    id: "task-light",
+                    name: "Task Lamp",
+                    ownerID: "device-1",
+                    supportsColor: true,
+                    supportsGradient: false,
+                    supportsEntertainment: true,
+                    function: .functional,
+                    functionMetadataResolved: true
+                )
+            ],
+            areas: [
+                HueAreaResource(
+                    id: "ent-1",
+                    name: "Playroom Area",
+                    kind: .entertainmentArea,
+                    childLightIDs: ["task-light"],
+                    childDeviceIDs: ["device-1"]
+                )
+            ]
+        ))
+        store.upsertMapping(HueSonosMapping(
+            sonosID: "playroom",
+            sonosName: "Playroom",
+            preferredTarget: .entertainmentArea("ent-1"),
+            includedLightIDs: ["task-light"],
+            excludedLightIDs: ["task-light"],
+            capability: .liveEntertainment
+        ))
+
+        let credentials = InMemoryHueRelayCredentialStorage()
+        let credentialStore = HueCredentialStore(storage: credentials)
+        credentialStore.saveApplicationKey("secret", forBridgeID: bridge.id)
+
+        let config = try HueAmbienceRelayConfig(
+            store: store,
+            credentialStore: credentialStore,
+            sonosSpeakers: []
+        )
+        let data = try JSONEncoder().encode(config)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let mappings = try XCTUnwrap(object["mappings"] as? [[String: Any]])
+        let mapping = try XCTUnwrap(mappings.first)
+
+        XCTAssertEqual(mapping["includedLightIDs"] as? [String], [])
+        XCTAssertEqual(mapping["excludedLightIDs"] as? [String], [])
+    }
+
     func testRelayConfigRequiresStoredApplicationKey() {
         let suiteName = "HueAmbienceRelayConfigTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!

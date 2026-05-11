@@ -79,8 +79,13 @@ struct HueAmbienceRelayMapping: Encodable, Equatable, Sendable {
         self.relayGroupID = relayGroupID
         self.preferredTarget = mapping.preferredTarget.map(HueAmbienceRelayTarget.init)
         self.fallbackTarget = mapping.fallbackTarget.map(HueAmbienceRelayTarget.init)
-        self.includedLightIDs = mapping.includedLightIDs.sorted()
-        self.excludedLightIDs = mapping.excludedLightIDs.sorted()
+        if mapping.preferredTarget?.isEntertainmentArea == true {
+            self.includedLightIDs = []
+            self.excludedLightIDs = []
+        } else {
+            self.includedLightIDs = mapping.includedLightIDs.sorted()
+            self.excludedLightIDs = mapping.excludedLightIDs.sorted()
+        }
         self.capability = mapping.capability
     }
 }
