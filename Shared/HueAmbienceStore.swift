@@ -358,7 +358,8 @@ private extension HueBridgeResources {
                     name: area.name,
                     kind: area.kind,
                     childLightIDs: area.childLightIDs.filter { validLightIDs.contains($0) },
-                    childDeviceIDs: area.childDeviceIDs
+                    childDeviceIDs: area.childDeviceIDs,
+                    entertainmentChannels: area.entertainmentChannels
                 )
             }
         )

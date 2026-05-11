@@ -322,6 +322,31 @@ struct HueLightResource: Codable, Equatable, Identifiable, Sendable {
     }
 }
 
+struct HueEntertainmentChannelPosition: Codable, Equatable, Sendable {
+    var x: Double
+    var y: Double
+    var z: Double
+}
+
+struct HueEntertainmentChannelResource: Codable, Equatable, Identifiable, Sendable {
+    let id: String
+    var lightID: String?
+    var serviceID: String?
+    var position: HueEntertainmentChannelPosition?
+
+    init(
+        id: String,
+        lightID: String? = nil,
+        serviceID: String? = nil,
+        position: HueEntertainmentChannelPosition? = nil
+    ) {
+        self.id = id
+        self.lightID = lightID
+        self.serviceID = serviceID
+        self.position = position
+    }
+}
+
 struct HueAreaResource: Codable, Equatable, Identifiable, Sendable {
     enum Kind: String, Codable, Sendable {
         case entertainmentArea
@@ -348,19 +373,22 @@ struct HueAreaResource: Codable, Equatable, Identifiable, Sendable {
     var kind: Kind
     var childLightIDs: [String]
     var childDeviceIDs: [String]
+    var entertainmentChannels: [HueEntertainmentChannelResource]
 
     init(
         id: String,
         name: String,
         kind: Kind,
         childLightIDs: [String],
-        childDeviceIDs: [String] = []
+        childDeviceIDs: [String] = [],
+        entertainmentChannels: [HueEntertainmentChannelResource] = []
     ) {
         self.id = id
         self.name = name
         self.kind = kind
         self.childLightIDs = childLightIDs
         self.childDeviceIDs = childDeviceIDs
+        self.entertainmentChannels = entertainmentChannels
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -369,6 +397,7 @@ struct HueAreaResource: Codable, Equatable, Identifiable, Sendable {
         case kind
         case childLightIDs
         case childDeviceIDs
+        case entertainmentChannels
     }
 
     init(from decoder: Decoder) throws {
@@ -378,6 +407,10 @@ struct HueAreaResource: Codable, Equatable, Identifiable, Sendable {
         kind = try container.decode(Kind.self, forKey: .kind)
         childLightIDs = try container.decode([String].self, forKey: .childLightIDs)
         childDeviceIDs = try container.decodeIfPresent([String].self, forKey: .childDeviceIDs) ?? []
+        entertainmentChannels = try container.decodeIfPresent(
+            [HueEntertainmentChannelResource].self,
+            forKey: .entertainmentChannels
+        ) ?? []
     }
 
     var ambienceTarget: HueAmbienceTarget {

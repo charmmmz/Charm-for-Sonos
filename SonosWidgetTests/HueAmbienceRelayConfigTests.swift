@@ -30,7 +30,10 @@ final class HueAmbienceRelayConfigTests: XCTestCase {
                     id: "ent-1",
                     name: "PC",
                     kind: .entertainmentArea,
-                    childLightIDs: ["light-1"]
+                    childLightIDs: ["light-1"],
+                    entertainmentChannels: [
+                        HueEntertainmentChannelResource(id: "0", lightID: "light-1", serviceID: "svc-1")
+                    ]
                 )
             ]
         ))
@@ -70,6 +73,16 @@ final class HueAmbienceRelayConfigTests: XCTestCase {
         XCTAssertEqual(preferredTarget["kind"] as? String, "entertainmentArea")
         XCTAssertEqual(preferredTarget["id"] as? String, "ent-1")
         XCTAssertEqual(object["flowIntervalSeconds"] as? Double, 4)
+
+        let resources = try XCTUnwrap(object["resources"] as? [String: Any])
+        let areas = try XCTUnwrap(resources["areas"] as? [[String: Any]])
+        let firstArea = try XCTUnwrap(areas.first)
+        let entertainmentChannels = try XCTUnwrap(firstArea["entertainmentChannels"] as? [[String: Any]])
+        let firstChannel = try XCTUnwrap(entertainmentChannels.first)
+
+        XCTAssertEqual(firstChannel["id"] as? String, "0")
+        XCTAssertEqual(firstChannel["lightID"] as? String, "light-1")
+        XCTAssertEqual(firstChannel["serviceID"] as? String, "svc-1")
     }
 
     func testRelayConfigRequiresStoredApplicationKey() {

@@ -77,6 +77,78 @@ final class HueAmbienceStoreTests: XCTestCase {
         XCTAssertFalse(decoded.functionMetadataResolved)
     }
 
+    func testHueAreaResourcePersistsEntertainmentChannels() throws {
+        let area = HueAreaResource(
+            id: "ent-1",
+            name: "Playroom Area",
+            kind: .entertainmentArea,
+            childLightIDs: ["light-1"],
+            childDeviceIDs: ["device-1"],
+            entertainmentChannels: [
+                HueEntertainmentChannelResource(
+                    id: "0",
+                    lightID: "light-1",
+                    serviceID: "svc-1",
+                    position: HueEntertainmentChannelPosition(x: 0, y: 1, z: 0)
+                )
+            ]
+        )
+
+        let data = try JSONEncoder().encode(area)
+        let decoded = try JSONDecoder().decode(HueAreaResource.self, from: data)
+
+        XCTAssertEqual(decoded.entertainmentChannels.first?.id, "0")
+        XCTAssertEqual(decoded.entertainmentChannels.first?.lightID, "light-1")
+        XCTAssertEqual(decoded.entertainmentChannels.first?.serviceID, "svc-1")
+        XCTAssertEqual(decoded.entertainmentChannels.first?.position?.y, 1)
+    }
+
+    func testUpdateResourcesPreservesEntertainmentChannels() {
+        let suiteName = "HueAmbienceStoreTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let storage = HueAmbienceDefaults(defaults: defaults)
+        let store = HueAmbienceStore(storage: storage)
+
+        store.updateResources(HueBridgeResources(
+            lights: [
+                HueLightResource(
+                    id: "light-1",
+                    name: "Gradient Strip",
+                    ownerID: "device-1",
+                    supportsColor: true,
+                    supportsGradient: true,
+                    supportsEntertainment: true
+                )
+            ],
+            areas: [
+                HueAreaResource(
+                    id: "ent-1",
+                    name: "Playroom Area",
+                    kind: .entertainmentArea,
+                    childLightIDs: ["light-1"],
+                    childDeviceIDs: ["device-1"],
+                    entertainmentChannels: [
+                        HueEntertainmentChannelResource(
+                            id: "channel-0",
+                            lightID: "light-1",
+                            serviceID: "svc-1",
+                            position: HueEntertainmentChannelPosition(x: 0, y: 1, z: 0)
+                        )
+                    ]
+                )
+            ]
+        ))
+
+        let channel = store.hueAreas.first?.entertainmentChannels.first
+
+        XCTAssertEqual(channel?.id, "channel-0")
+        XCTAssertEqual(channel?.lightID, "light-1")
+        XCTAssertEqual(channel?.serviceID, "svc-1")
+        XCTAssertEqual(channel?.position?.y, 1)
+    }
+
     func testHueBridgeResourcesDetectsUnresolvedFunctionMetadata() {
         let resources = HueBridgeResources(
             lights: [

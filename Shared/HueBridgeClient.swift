@@ -652,6 +652,23 @@ private struct HueEntertainmentConfigurationDTO: Decodable {
         serviceToLightID: [String: String] = [:],
         lightDeviceIDsByID: [String: String] = [:]
     ) -> HueAreaResource {
+        let entertainmentChannels = (channels ?? []).enumerated().compactMap { index, channel -> HueEntertainmentChannelResource? in
+            let service = channel.members?.compactMap(\.service).first
+            let lightID = service.flatMap { reference -> String? in
+                if reference.rtype == "light" {
+                    return reference.rid
+                }
+
+                return serviceToLightID[reference.rid]
+            }
+
+            return HueEntertainmentChannelResource(
+                id: channel.resourceID(fallbackIndex: index),
+                lightID: lightID,
+                serviceID: service?.rid,
+                position: channel.position?.resource
+            )
+        }
         let channelServices = channels?
             .flatMap { $0.members ?? [] }
             .compactMap(\.service) ?? []
@@ -671,7 +688,8 @@ private struct HueEntertainmentConfigurationDTO: Decodable {
             name: metadata?.name ?? id,
             kind: kind,
             childLightIDs: uniqueLightIDs,
-            childDeviceIDs: Self.unique(deviceIDs)
+            childDeviceIDs: Self.unique(deviceIDs),
+            entertainmentChannels: entertainmentChannels
         )
     }
 
@@ -682,7 +700,42 @@ private struct HueEntertainmentConfigurationDTO: Decodable {
 }
 
 private struct HueEntertainmentChannelDTO: Decodable {
+    var id: String?
+    var channelID: Int?
+    var position: HueEntertainmentPositionDTO?
     var members: [HueEntertainmentMemberDTO]?
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case channelID = "channel_id"
+        case position
+        case members
+    }
+
+    func resourceID(fallbackIndex: Int) -> String {
+        if let id, !id.isEmpty {
+            return id
+        }
+        if let channelID {
+            return String(channelID)
+        }
+
+        return String(fallbackIndex)
+    }
+}
+
+private struct HueEntertainmentPositionDTO: Decodable {
+    var x: Double?
+    var y: Double?
+    var z: Double?
+
+    var resource: HueEntertainmentChannelPosition? {
+        guard let x, let y, let z else {
+            return nil
+        }
+
+        return HueEntertainmentChannelPosition(x: x, y: y, z: z)
+    }
 }
 
 private struct HueEntertainmentMemberDTO: Decodable {

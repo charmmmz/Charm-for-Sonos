@@ -172,7 +172,10 @@ final class HueBridgeClientTests: XCTestCase {
             id: "ent-1",
             name: "Living Sync",
             kind: .entertainmentArea,
-            childLightIDs: ["light-1"]
+            childLightIDs: ["light-1"],
+            entertainmentChannels: [
+                HueEntertainmentChannelResource(id: "0", lightID: "light-1", serviceID: "light-1")
+            ]
         ))
         XCTAssertEqual(resources.areas.dropFirst().first, HueAreaResource(
             id: "room-1",
@@ -269,8 +272,200 @@ final class HueBridgeClientTests: XCTestCase {
             id: "ent-1",
             name: "Living Sync",
             kind: .entertainmentArea,
-            childLightIDs: ["light-1"]
+            childLightIDs: ["light-1"],
+            entertainmentChannels: [
+                HueEntertainmentChannelResource(id: "0", lightID: "light-1", serviceID: "service-ent-1")
+            ]
         ))
+    }
+
+    func testFetchResourcesPopulatesEntertainmentChannelMetadata() async throws {
+        let transport = MockHueTransport(responses: [
+            "GET /clip/v2/resource/light": """
+            {
+              "data": [
+                {
+                  "id": "light-1",
+                  "metadata": {
+                    "name": "Gradient Strip"
+                  },
+                  "services": [
+                    {
+                      "rid": "service-ent-1",
+                      "rtype": "entertainment"
+                    }
+                  ],
+                  "color": {},
+                  "gradient": {
+                    "points_capable": 5
+                  },
+                  "mode": "normal"
+                }
+              ]
+            }
+            """,
+            "GET /clip/v2/resource/device": """
+            {
+              "data": []
+            }
+            """,
+            "GET /clip/v2/resource/room": """
+            {
+              "data": []
+            }
+            """,
+            "GET /clip/v2/resource/zone": """
+            {
+              "data": []
+            }
+            """,
+            "GET /clip/v2/resource/entertainment_configuration": """
+            {
+              "data": [
+                {
+                  "id": "ent-1",
+                  "metadata": {
+                    "name": "Living Sync"
+                  },
+                  "channels": [
+                    {
+                      "channel_id": 0,
+                      "position": { "x": 0, "y": 1, "z": 0 },
+                      "members": [
+                        {
+                          "service": {
+                            "rid": "service-ent-1",
+                            "rtype": "entertainment"
+                          }
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+            """
+        ])
+        let client = HueBridgeClient(
+            bridge: HueBridgeInfo(id: "bridge-1", ipAddress: "192.168.1.20", name: "Home Hue"),
+            credentialStore: HueCredentialStore(storage: InMemoryHueCredentialStorage()),
+            transport: transport,
+            applicationKeyProvider: { "generated-key" }
+        )
+
+        let resources = try await client.fetchResources()
+        let area = try XCTUnwrap(resources.areas.first)
+        let channel = try XCTUnwrap(area.entertainmentChannels.first)
+
+        XCTAssertEqual(channel.id, "0")
+        XCTAssertEqual(channel.lightID, "light-1")
+        XCTAssertEqual(channel.serviceID, "service-ent-1")
+        XCTAssertEqual(channel.position?.y, 1)
+    }
+
+    func testFetchResourcesFallsBackToChannelIndexWhenChannelIDIsMissing() async throws {
+        let transport = MockHueTransport(responses: [
+            "GET /clip/v2/resource/light": """
+            {
+              "data": []
+            }
+            """,
+            "GET /clip/v2/resource/device": """
+            {
+              "data": []
+            }
+            """,
+            "GET /clip/v2/resource/room": """
+            {
+              "data": []
+            }
+            """,
+            "GET /clip/v2/resource/zone": """
+            {
+              "data": []
+            }
+            """,
+            "GET /clip/v2/resource/entertainment_configuration": """
+            {
+              "data": [
+                {
+                  "id": "ent-1",
+                  "metadata": {
+                    "name": "Living Sync"
+                  },
+                  "channels": [
+                    {},
+                    {}
+                  ]
+                }
+              ]
+            }
+            """
+        ])
+        let client = HueBridgeClient(
+            bridge: HueBridgeInfo(id: "bridge-1", ipAddress: "192.168.1.20", name: "Home Hue"),
+            credentialStore: HueCredentialStore(storage: InMemoryHueCredentialStorage()),
+            transport: transport,
+            applicationKeyProvider: { "generated-key" }
+        )
+
+        let resources = try await client.fetchResources()
+        let area = try XCTUnwrap(resources.areas.first)
+
+        XCTAssertEqual(area.entertainmentChannels.map(\.id), ["0", "1"])
+    }
+
+    func testFetchResourcesPrefersNonzeroBridgeChannelIDOverArrayIndex() async throws {
+        let transport = MockHueTransport(responses: [
+            "GET /clip/v2/resource/light": """
+            {
+              "data": []
+            }
+            """,
+            "GET /clip/v2/resource/device": """
+            {
+              "data": []
+            }
+            """,
+            "GET /clip/v2/resource/room": """
+            {
+              "data": []
+            }
+            """,
+            "GET /clip/v2/resource/zone": """
+            {
+              "data": []
+            }
+            """,
+            "GET /clip/v2/resource/entertainment_configuration": """
+            {
+              "data": [
+                {
+                  "id": "ent-1",
+                  "metadata": {
+                    "name": "Living Sync"
+                  },
+                  "channels": [
+                    {
+                      "channel_id": 7
+                    }
+                  ]
+                }
+              ]
+            }
+            """
+        ])
+        let client = HueBridgeClient(
+            bridge: HueBridgeInfo(id: "bridge-1", ipAddress: "192.168.1.20", name: "Home Hue"),
+            credentialStore: HueCredentialStore(storage: InMemoryHueCredentialStorage()),
+            transport: transport,
+            applicationKeyProvider: { "generated-key" }
+        )
+
+        let resources = try await client.fetchResources()
+        let area = try XCTUnwrap(resources.areas.first)
+
+        XCTAssertEqual(area.entertainmentChannels.map(\.id), ["7"])
     }
 
     func testFetchResourcesResolvesZoneRoomChildrenToLights() async throws {
