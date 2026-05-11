@@ -354,7 +354,7 @@ struct HueBridgeClient {
             path: "/clip/v2/resource/entertainment_configuration"
         )
 
-        let serviceToLightID = lightEnvelope.data.reduce(into: [String: String]()) { result, light in
+        var serviceToLightID = lightEnvelope.data.reduce(into: [String: String]()) { result, light in
             result[light.id] = light.id
             light.services?.forEach { service in
                 result[service.rid] = light.id
@@ -362,6 +362,19 @@ struct HueBridgeClient {
         }
         let deviceLightIDsByID = deviceEnvelope.data.reduce(into: [String: [String]]()) { result, device in
             result[device.id] = device.lightIDs(serviceToLightID: serviceToLightID)
+        }
+        deviceEnvelope.data.forEach { device in
+            guard let lightIDs = deviceLightIDsByID[device.id],
+                  lightIDs.count == 1,
+                  let lightID = lightIDs.first else {
+                return
+            }
+
+            device.services?.forEach { service in
+                if serviceToLightID[service.rid] == nil {
+                    serviceToLightID[service.rid] = lightID
+                }
+            }
         }
         let lightDeviceIDsByID = lightEnvelope.data.reduce(into: [String: String]()) { result, light in
             if light.owner?.rtype == "device" {

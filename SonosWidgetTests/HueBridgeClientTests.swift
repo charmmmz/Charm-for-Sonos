@@ -279,6 +279,95 @@ final class HueBridgeClientTests: XCTestCase {
         ))
     }
 
+    func testFetchResourcesResolvesDeviceEntertainmentServicesForFunctionalLights() async throws {
+        let transport = MockHueTransport(responses: [
+            "GET /clip/v2/resource/light": """
+            {
+              "data": [
+                {
+                  "id": "task-light",
+                  "metadata": {
+                    "name": "Desk Lamp",
+                    "function": "functional"
+                  },
+                  "owner": {
+                    "rid": "device-1",
+                    "rtype": "device"
+                  },
+                  "color": {}
+                }
+              ]
+            }
+            """,
+            "GET /clip/v2/resource/device": """
+            {
+              "data": [
+                {
+                  "id": "device-1",
+                  "services": [
+                    {
+                      "rid": "task-light",
+                      "rtype": "light"
+                    },
+                    {
+                      "rid": "service-ent-task",
+                      "rtype": "entertainment"
+                    }
+                  ]
+                }
+              ]
+            }
+            """,
+            "GET /clip/v2/resource/room": """
+            {
+              "data": []
+            }
+            """,
+            "GET /clip/v2/resource/zone": """
+            {
+              "data": []
+            }
+            """,
+            "GET /clip/v2/resource/entertainment_configuration": """
+            {
+              "data": [
+                {
+                  "id": "ent-1",
+                  "metadata": {
+                    "name": "PC Entertainment"
+                  },
+                  "channels": [
+                    {
+                      "members": [
+                        {
+                          "service": {
+                            "rid": "service-ent-task",
+                            "rtype": "entertainment"
+                          }
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+            """
+        ])
+        let client = HueBridgeClient(
+            bridge: HueBridgeInfo(id: "bridge-1", ipAddress: "192.168.1.20", name: "Home Hue"),
+            credentialStore: HueCredentialStore(storage: InMemoryHueCredentialStorage()),
+            transport: transport,
+            applicationKeyProvider: { "generated-key" }
+        )
+
+        let resources = try await client.fetchResources()
+        let area = try XCTUnwrap(resources.areas.first)
+
+        XCTAssertEqual(area.childLightIDs, ["task-light"])
+        XCTAssertEqual(area.entertainmentChannels.first?.lightID, "task-light")
+        XCTAssertEqual(area.entertainmentChannels.first?.serviceID, "service-ent-task")
+    }
+
     func testFetchResourcesPopulatesEntertainmentChannelMetadata() async throws {
         let transport = MockHueTransport(responses: [
             "GET /clip/v2/resource/light": """
