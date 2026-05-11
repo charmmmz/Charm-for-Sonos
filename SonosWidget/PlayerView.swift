@@ -2228,6 +2228,14 @@ private struct ThumblessSlider: View {
 
 // MARK: - Mini Player Bar (persistent across tabs)
 
+enum MiniPlayerLayoutMetrics {
+    static let landscapeCompactMaxWidth: CGFloat = 620
+
+    static func maxWidth(isLandscapeCompact: Bool) -> CGFloat? {
+        isLandscapeCompact ? landscapeCompactMaxWidth : nil
+    }
+}
+
 /// Compact now-playing bar that lives at the bottom of the app and stays
 /// visible on every tab (Home / Search / …) — tapping it opens the full
 /// player; dragging up does the same with an interactive rubber-band.
@@ -2236,6 +2244,7 @@ private struct ThumblessSlider: View {
 /// to mount it above the tab bar with matching content padding.
 struct MiniPlayerBar: View {
     @Bindable var manager: SonosManager
+    @Environment(\.verticalSizeClass) private var verticalSizeClass
     /// When mounted inside iOS 26's `tabViewBottomAccessory` slot the system
     /// provides its own liquid-glass capsule + horizontal inset, and renders
     /// the accessory *inline with the selected tab icon* once the user
@@ -2313,6 +2322,9 @@ struct MiniPlayerBar: View {
             }
             .padding(.horizontal, inSystemAccessory ? 12 : 16)
             .padding(.vertical, inSystemAccessory ? 6 : 10)
+            .modifier(MiniPlayerWidthModifier(maxWidth: MiniPlayerLayoutMetrics.maxWidth(
+                isLandscapeCompact: verticalSizeClass == .compact
+            )))
             .modifier(MiniPlayerChromeModifier(useCustomChrome: !inSystemAccessory))
             // Make the ENTIRE bar hit-testable — without this, SwiftUI only
             // counts taps on the HStack's concrete subviews (art + text +
@@ -2359,6 +2371,18 @@ struct MiniPlayerBar: View {
             return ("wifi.exclamationmark", .orange, "Speaker unreachable")
         default:
             return nil
+        }
+    }
+}
+
+private struct MiniPlayerWidthModifier: ViewModifier {
+    let maxWidth: CGFloat?
+
+    func body(content: Content) -> some View {
+        if let maxWidth {
+            content.frame(maxWidth: maxWidth, alignment: .leading)
+        } else {
+            content.frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 }

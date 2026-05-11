@@ -44,3 +44,16 @@ final class SettingsInputDraftTests: XCTestCase {
         XCTAssertEqual(savedAgentToken, " token-value ")
     }
 }
+
+final class MiniPlayerLayoutMetricsTests: XCTestCase {
+    func testLandscapeCompactMiniPlayerUsesShortCapsuleWidth() {
+        XCTAssertEqual(
+            MiniPlayerLayoutMetrics.maxWidth(isLandscapeCompact: true),
+            620
+        )
+    }
+
+    func testNonLandscapeCompactMiniPlayerKeepsFullWidth() {
+        XCTAssertNil(MiniPlayerLayoutMetrics.maxWidth(isLandscapeCompact: false))
+    }
+}
