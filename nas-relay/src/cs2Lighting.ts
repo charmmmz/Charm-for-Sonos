@@ -26,6 +26,7 @@ export interface Cs2LightingDecision {
     | 'flash'
     | 'kill'
     | 'lowHealth'
+    | 'observerAmbient'
     | 'roundFreeze'
     | 'roundOver';
   palette: HueRGBColor[];
@@ -64,7 +65,7 @@ interface Cs2LightingServiceOptions {
   logFilePath?: string;
 }
 
-const defaultActiveTimeoutMs = 3_000;
+const defaultActiveTimeoutMs = 8_000;
 const defaultMinRenderIntervalMs = 70;
 const animationFrameIntervalMs = 40;
 const c4FuseMs = 40_000;
@@ -125,6 +126,7 @@ export class Cs2LightingService {
   private activeMode: Cs2LightingMode = 'idle';
   private fallbackReason: string | null = null;
   private lastRenderSignature: string | null = null;
+  private lastGameStateAt: Date | null = null;
   private lastRenderedAt: Date | null = null;
   private lastRenderAttemptAt = 0;
   private activeTransport: Cs2LightingStatus['transport'] = 'unavailable';
@@ -171,6 +173,9 @@ export class Cs2LightingService {
       return;
     }
 
+    this.lastGameStateAt = new Date(now);
+    this.activeProviderSteamId = snapshot.providerSteamId;
+    this.scheduleInactiveStop();
     this.updateBombClock(snapshot, previous, now);
     const decisionContext: Cs2LightingDecisionContext = {
       bombPlantedAt: this.bombPlantedAtByProvider.get(snapshot.providerSteamId),
@@ -192,7 +197,6 @@ export class Cs2LightingService {
     if (signature === this.lastRenderSignature) {
       if (this.activeFrame) {
         this.lastRenderedAt = new Date(now);
-        this.scheduleInactiveStop();
       }
       return;
     }
@@ -227,8 +231,9 @@ export class Cs2LightingService {
     const enabled = this.store.current?.cs2LightingEnabled === true;
     const active = enabled
       && this.fallbackReason === null
-      && this.lastRenderedAt !== null
-      && now.getTime() - this.lastRenderedAt.getTime() <= (this.options.activeTimeoutMs ?? defaultActiveTimeoutMs);
+      && this.activeFrame !== null
+      && this.lastGameStateAt !== null
+      && now.getTime() - this.lastGameStateAt.getTime() <= (this.options.activeTimeoutMs ?? defaultActiveTimeoutMs);
 
     return {
       enabled,
@@ -261,8 +266,8 @@ export class Cs2LightingService {
     this.cancelInactiveStop();
     this.inactiveStopTimer = setTimeout(() => {
       const providerSteamId = this.activeProviderSteamId;
-      void this.stopActiveRenderer();
       void this.logLightingInactiveTimeout(providerSteamId);
+      this.clearActive(true);
     }, this.options.activeTimeoutMs ?? defaultActiveTimeoutMs);
     this.inactiveStopTimer.unref?.();
   }
@@ -295,6 +300,7 @@ export class Cs2LightingService {
     this.activeMode = 'idle';
     this.activeTransport = 'unavailable';
     this.activeProviderSteamId = null;
+    this.lastGameStateAt = null;
     this.lastRenderedAt = null;
     this.lastRenderSignature = null;
   }
@@ -354,7 +360,8 @@ export class Cs2LightingService {
     }
 
     const nowMs = this.options.now?.() ?? Date.now();
-    if (nowMs - this.lastRenderAttemptAt > (this.options.activeTimeoutMs ?? defaultActiveTimeoutMs)) {
+    const lastActiveAt = this.lastGameStateAt?.getTime() ?? 0;
+    if (nowMs - lastActiveAt > (this.options.activeTimeoutMs ?? defaultActiveTimeoutMs)) {
       this.clearActive(true);
       return;
     }
@@ -662,7 +669,7 @@ function momentaryDecisionForSnapshot(
   const health = clamp01((state?.health ?? 100) / 100);
   const activity = snapshot.player?.activity?.toLowerCase();
   const isDead = (state?.health ?? 100) <= 0;
-  const observer = activity === 'spectating' || activity === 'observer' || activity === 'menu';
+  const observer = isObserverActivity(activity) || isMenuActivity(activity);
 
   if (observer) return null;
 
@@ -740,8 +747,10 @@ function backgroundDecisionForSnapshot(
   const health = clamp01((state?.health ?? 100) / 100);
   const activity = snapshot.player?.activity?.toLowerCase();
   const isDead = (state?.health ?? 100) <= 0;
-  const observer = activity === 'spectating' || activity === 'observer' || activity === 'menu';
-  if (observer || isDead) return null;
+  if (isMenuActivity(activity)) return null;
+  if (isObserverActivity(activity) || isDead) {
+    return observerAmbientDecision(snapshot);
+  }
 
   const phase = roundPhase(snapshot);
   if (phase === 'over') {
@@ -852,6 +861,27 @@ function killsIncreased(snapshot: Cs2GameStateSnapshot, previous?: Cs2GameStateS
 
 function teamAmbientPalette(snapshot: Cs2GameStateSnapshot): HueRGBColor[] {
   return snapshot.player?.team?.toUpperCase() === 'T' ? palettes.tAmbient : palettes.ctAmbient;
+}
+
+function isObserverActivity(activity: string | undefined): boolean {
+  return activity === 'spectating' || activity === 'observer';
+}
+
+function isMenuActivity(activity: string | undefined): boolean {
+  return activity === 'menu';
+}
+
+function observerAmbientDecision(snapshot: Cs2GameStateSnapshot): Cs2LightingDecision {
+  const mode = gameMode(snapshot);
+  return {
+    mode,
+    reason: 'observerAmbient',
+    palette: dim(teamAmbientPalette(snapshot), 0.36),
+    transitionSeconds: mode === 'deathmatch' ? 0.18 : 0.28,
+    attackSeconds: 0,
+    holdSeconds: 0,
+    fadeSeconds: 0,
+  };
 }
 
 function lowHealthBackgroundDecision(snapshot: Cs2GameStateSnapshot, health: number): Cs2LightingDecision {
@@ -1174,7 +1204,9 @@ function isDeathEvent(snapshot: Cs2GameStateSnapshot, previous?: Cs2GameStateSna
 }
 
 function isPriorityDecision(decision: Cs2LightingDecision): boolean {
-  return decision.reason !== 'ambient' && decision.reason !== 'lowHealth';
+  return decision.reason !== 'ambient'
+    && decision.reason !== 'lowHealth'
+    && decision.reason !== 'observerAmbient';
 }
 
 function isHeldEventDecision(decision: Cs2LightingDecision): boolean {

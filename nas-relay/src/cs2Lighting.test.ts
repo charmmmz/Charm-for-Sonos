@@ -30,7 +30,7 @@ test('CS2 decision gives burning priority over simultaneous health damage', () =
   assert.deepEqual(decision.palette[0], { r: 1, g: 0.28, b: 0 });
 });
 
-test('CS2 decision ignores competitive observer state instead of taking over lights', () => {
+test('CS2 decision keeps dead player on dim team ambience', () => {
   const decision = buildCs2LightingDecision(snapshot({
     player: {
       team: 'CT',
@@ -39,10 +39,13 @@ test('CS2 decision ignores competitive observer state instead of taking over lig
     },
   }));
 
-  assert.equal(decision, null);
+  assert.equal(decision?.reason, 'observerAmbient');
+  const color = decision?.palette[0];
+  assert(color && color.b > color.r);
+  assert(color && maxChannel(color) < 0.2);
 });
 
-test('CS2 decision ignores observer state before transient effects', () => {
+test('CS2 decision keeps observer state on dim team ambience before transient effects', () => {
   const decision = buildCs2LightingDecision(snapshot({
     player: {
       team: 'CT',
@@ -51,10 +54,13 @@ test('CS2 decision ignores observer state before transient effects', () => {
     },
   }));
 
-  assert.equal(decision, null);
+  assert.equal(decision?.reason, 'observerAmbient');
+  const color = decision?.palette[0];
+  assert(color && color.b > color.r);
+  assert(color && maxChannel(color) < 0.2);
 });
 
-test('CS2 decision ignores already-dead residual effects', () => {
+test('CS2 decision keeps already-dead residual effects on dim team ambience', () => {
   const decision = buildCs2LightingDecision(snapshot({
     player: {
       team: 'CT',
@@ -63,7 +69,10 @@ test('CS2 decision ignores already-dead residual effects', () => {
     },
   }));
 
-  assert.equal(decision, null);
+  assert.equal(decision?.reason, 'observerAmbient');
+  const color = decision?.palette[0];
+  assert(color && color.b > color.r);
+  assert(color && maxChannel(color) < 0.2);
 });
 
 test('CS2 kill effect uses a short non-green burst', () => {
@@ -331,7 +340,7 @@ test('CS2 lighting service keeps duplicate game state active without re-renderin
     await store.save(config);
     const renderer = new RecordingHueAmbienceRenderer();
     const service = new Cs2LightingService(store, () => renderer, {
-      activeTimeoutMs: 10,
+      activeTimeoutMs: 100,
       minRenderIntervalMs: 100,
     });
     const state = snapshot();
@@ -342,6 +351,104 @@ test('CS2 lighting service keeps duplicate game state active without re-renderin
 
     assert.equal(renderer.renderedFrames.length, 1);
     assert.equal(service.status().active, true);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('CS2 lighting service keeps steady state active past the configured CS2 heartbeat', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'cs2-lighting-'));
+  try {
+    const store = new HueAmbienceConfigStore(dir);
+    await store.save(config);
+    const renderer = new RecordingHueAmbienceRenderer();
+    let now = new Date('2026-05-12T09:30:00.000Z').getTime();
+    const service = new Cs2LightingService(store, () => renderer, {
+      now: () => now,
+    });
+
+    await service.receive(snapshot({
+      receivedAt: new Date(now),
+      player: { team: 'T', state: { health: 100, burning: 0, flashed: 0 } },
+    }));
+
+    now += 6_000;
+
+    assert.equal(service.status(new Date(now)).active, true);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('CS2 lighting service extends active lease from game state even when rendering is throttled', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'cs2-lighting-'));
+  try {
+    const store = new HueAmbienceConfigStore(dir);
+    await store.save(config);
+    const renderer = new RecordingHueAmbienceRenderer();
+    let now = new Date('2026-05-12T09:30:00.000Z').getTime();
+    const service = new Cs2LightingService(store, () => renderer, {
+      activeTimeoutMs: 100,
+      minRenderIntervalMs: 1_000,
+      now: () => now,
+    });
+
+    await service.receive(snapshot({
+      receivedAt: new Date(now),
+      player: { team: 'CT', state: { health: 100, burning: 0, flashed: 0 } },
+    }));
+
+    now += 150;
+    await service.receive(snapshot({
+      receivedAt: new Date(now),
+      player: { team: 'T', state: { health: 100, burning: 0, flashed: 0 } },
+    }));
+
+    assert.equal(renderer.renderedFrames.length, 1);
+    assert.equal(service.status(new Date(now)).active, true);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('CS2 lighting service clears active streaming on menu game state', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'cs2-lighting-'));
+  try {
+    const store = new HueAmbienceConfigStore(dir);
+    await store.save(config);
+    const renderer = new RecordingHueAmbienceRenderer();
+    const service = new Cs2LightingService(store, () => renderer);
+
+    await service.receive(snapshot({
+      player: { team: 'CT', activity: 'Playing', state: { health: 100, burning: 0, flashed: 0 } },
+    }));
+    await service.receive(snapshot({
+      player: { team: 'CT', activity: 'menu', state: { health: 100, burning: 0, flashed: 0 } },
+    }));
+
+    assert.equal(service.status().active, false);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('CS2 lighting service keeps observer game state active with dim team ambience', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'cs2-lighting-'));
+  try {
+    const store = new HueAmbienceConfigStore(dir);
+    await store.save(config);
+    const renderer = new RecordingHueAmbienceRenderer();
+    const service = new Cs2LightingService(store, () => renderer);
+
+    await service.receive(snapshot({
+      player: { team: 'T', activity: 'Spectating', state: { health: 100, burning: 0, flashed: 0 } },
+    }));
+
+    const color = renderer.renderedFrames[0]?.targets[0]?.lights[0]?.colors[0];
+    assert.equal(service.status().active, true);
+    assert.equal(renderer.renderedFrames.length, 1);
+    assert(color && color.r > color.b);
+    assert(color && maxChannel(color) < 0.2);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -567,6 +674,36 @@ test('CS2 planted bomb preset runs near Hue Entertainment update cadence', async
     await new Promise(resolve => setTimeout(resolve, 170));
 
     assert(renderer.renderedFrames.length >= 5);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('CS2 planted bomb animation keeps streaming active between game state heartbeats', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'cs2-lighting-'));
+  try {
+    const store = new HueAmbienceConfigStore(dir);
+    await store.save(config);
+    const renderer = new RecordingHueAmbienceRenderer();
+    const service = new Cs2LightingService(store, () => renderer, {
+      minRenderIntervalMs: 0,
+      activeTimeoutMs: 120,
+    });
+
+    await service.receive(snapshot({
+      round: { bomb: 'planted' },
+      player: { team: 'CT', state: { health: 100, burning: 0, flashed: 0 } },
+    }));
+
+    await new Promise(resolve => setTimeout(resolve, 80));
+    await service.receive(snapshot({
+      round: { bomb: 'planted' },
+      player: { team: 'CT', state: { health: 100, burning: 0, flashed: 0 } },
+    }));
+    await new Promise(resolve => setTimeout(resolve, 80));
+
+    assert(renderer.renderedFrames.length >= 3);
+    assert.equal(service.status().active, true);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
