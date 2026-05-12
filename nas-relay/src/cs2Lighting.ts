@@ -22,7 +22,9 @@ export interface Cs2LightingDecision {
     | 'death'
     | 'flash'
     | 'kill'
-    | 'lowHealth';
+    | 'lowHealth'
+    | 'roundFreeze'
+    | 'roundOver';
   palette: HueRGBColor[];
   transitionSeconds: number;
   attackSeconds: number;
@@ -376,7 +378,7 @@ export class Cs2LightingService {
     if (isHeldEventDecision(decision)) {
       const active = this.heldEffects.get(providerSteamId);
       if (active?.decision.reason === decision.reason && !heldEffectComplete(active, now)) {
-        return heldEffectDecision(active, baseDecisionForSnapshot(snapshot, context) ?? active.baseDecision, now).decision;
+        return heldEffectDecision(active, backgroundDecisionForSnapshot(snapshot, context) ?? active.baseDecision, now).decision;
       }
 
       const startedAtMs = now - firstFrameLeadMs(decision);
@@ -415,12 +417,38 @@ export function buildCs2LightingDecision(
   previous?: Cs2GameStateSnapshot,
   context: Cs2LightingDecisionContext = {},
 ): Cs2LightingDecision | null {
+  const overlay = momentaryDecisionForSnapshot(snapshot, previous);
+  if (overlay) return overlay;
+
+  return backgroundDecisionForSnapshot(snapshot, context);
+}
+
+function momentaryDecisionForSnapshot(
+  snapshot: Cs2GameStateSnapshot,
+  previous?: Cs2GameStateSnapshot,
+): Cs2LightingDecision | null {
   const mode = gameMode(snapshot);
   const state = snapshot.player?.state;
   const health = clamp01((state?.health ?? 100) / 100);
   const activity = snapshot.player?.activity?.toLowerCase();
   const isDead = (state?.health ?? 100) <= 0;
   const observer = activity === 'spectating' || activity === 'observer' || activity === 'menu';
+
+  if (observer) return null;
+
+  if (isDeathEvent(snapshot, previous)) {
+    return {
+      mode,
+      reason: 'death',
+      palette: dim(palettes.damage, 0.28),
+      transitionSeconds: 0.25,
+      attackSeconds: 0.12,
+      holdSeconds: 0.65,
+      fadeSeconds: 0.8,
+    };
+  }
+
+  if (isDead) return null;
 
   if ((state?.flashed ?? 0) > 0 && ((previous?.player?.state?.flashed ?? 0) <= 0)) {
     return {
@@ -458,20 +486,6 @@ export function buildCs2LightingDecision(
     };
   }
 
-  if (isDeathEvent(snapshot, previous)) {
-    return {
-      mode,
-      reason: 'death',
-      palette: dim(palettes.damage, 0.28),
-      transitionSeconds: 0.25,
-      attackSeconds: 0.12,
-      holdSeconds: 0.65,
-      fadeSeconds: 0.8,
-    };
-  }
-
-  if (observer || isDead) return null;
-
   if (killsIncreased(snapshot, previous)) {
     return {
       mode,
@@ -484,20 +498,36 @@ export function buildCs2LightingDecision(
     };
   }
 
-  if (health > 0 && health <= 0.3) {
-    return {
-      mode,
-      reason: 'lowHealth',
-      palette: scaleHealthPalette(palettes.lowHealth, health),
-      transitionSeconds: 0.3,
-      attackSeconds: 0,
-      holdSeconds: 0,
-      fadeSeconds: 0,
-    };
+  return null;
+}
+
+function backgroundDecisionForSnapshot(
+  snapshot: Cs2GameStateSnapshot,
+  context: Cs2LightingDecisionContext,
+): Cs2LightingDecision | null {
+  const mode = gameMode(snapshot);
+  const state = snapshot.player?.state;
+  const health = clamp01((state?.health ?? 100) / 100);
+  const activity = snapshot.player?.activity?.toLowerCase();
+  const isDead = (state?.health ?? 100) <= 0;
+  const observer = activity === 'spectating' || activity === 'observer' || activity === 'menu';
+  if (observer || isDead) return null;
+
+  const phase = roundPhase(snapshot);
+  if (phase === 'over') {
+    return roundBackgroundDecision(snapshot, 'roundOver', 0.32, 0.35);
   }
 
   if (mode === 'competitive' && snapshot.round?.bomb?.toLowerCase() === 'planted') {
     return bombPlantedDecision(mode, context);
+  }
+
+  if (phase === 'freezetime') {
+    return roundBackgroundDecision(snapshot, 'roundFreeze', 0.48, 0.4);
+  }
+
+  if (health > 0 && health <= 0.3) {
+    return lowHealthBackgroundDecision(snapshot, health);
   }
 
   return {
@@ -594,9 +624,48 @@ function teamAmbientPalette(snapshot: Cs2GameStateSnapshot): HueRGBColor[] {
   return snapshot.player?.team?.toUpperCase() === 'T' ? palettes.tAmbient : palettes.ctAmbient;
 }
 
-function scaleHealthPalette(palette: HueRGBColor[], health: number): HueRGBColor[] {
-  const scale = 0.35 + (1 - health) * 0.35;
-  return dim(palette, scale);
+function lowHealthBackgroundDecision(snapshot: Cs2GameStateSnapshot, health: number): Cs2LightingDecision {
+  const mode = gameMode(snapshot);
+  const severity = clamp01((0.3 - health) / 0.3);
+  const redWash = 0.12 + (severity * 0.16);
+  return {
+    mode,
+    reason: 'lowHealth',
+    palette: blendPalettes(teamAmbientPalette(snapshot), palettes.lowHealth, redWash),
+    transitionSeconds: 0.3,
+    attackSeconds: 0,
+    holdSeconds: 0,
+    fadeSeconds: 0,
+  };
+}
+
+function roundBackgroundDecision(
+  snapshot: Cs2GameStateSnapshot,
+  reason: 'roundFreeze' | 'roundOver',
+  intensity: number,
+  transitionSeconds: number,
+): Cs2LightingDecision {
+  return {
+    mode: gameMode(snapshot),
+    reason,
+    palette: dim(teamAmbientPalette(snapshot), intensity),
+    transitionSeconds,
+    attackSeconds: 0,
+    holdSeconds: 0,
+    fadeSeconds: 0,
+  };
+}
+
+function deathFallbackDecision(snapshot: Cs2GameStateSnapshot): Cs2LightingDecision {
+  return {
+    mode: gameMode(snapshot),
+    reason: 'ambient',
+    palette: dim(teamAmbientPalette(snapshot), 0.3),
+    transitionSeconds: 0.45,
+    attackSeconds: 0,
+    holdSeconds: 0,
+    fadeSeconds: 0,
+  };
 }
 
 function dim(palette: HueRGBColor[], scale: number): HueRGBColor[] {
@@ -619,7 +688,13 @@ function frameSignature(decision: Cs2LightingDecision, snapshot: Cs2GameStateSna
     snapshot.player?.state?.round_kills,
     snapshot.player?.match_stats?.kills,
     snapshot.round?.bomb,
+    snapshot.round?.phase,
+    snapshot.map?.phase,
   ].join('|');
+}
+
+function roundPhase(snapshot: Cs2GameStateSnapshot): string {
+  return snapshot.round?.phase?.toLowerCase() ?? '';
 }
 
 function bombPlantedDecision(
@@ -653,42 +728,8 @@ function baseDecisionForHeldEffect(
   effect: Cs2LightingDecision,
   context: Cs2LightingDecisionContext,
 ): Cs2LightingDecision {
-  if (effect.reason === 'flash') {
-    return ambientDecision(snapshot);
-  }
-
-  return baseDecisionForSnapshot(snapshot, context) ?? ambientDecision(snapshot);
-}
-
-function baseDecisionForSnapshot(
-  snapshot: Cs2GameStateSnapshot,
-  context: Cs2LightingDecisionContext,
-): Cs2LightingDecision | null {
-  const mode = gameMode(snapshot);
-  const state = snapshot.player?.state;
-  const health = clamp01((state?.health ?? 100) / 100);
-  const activity = snapshot.player?.activity?.toLowerCase();
-  const observer = activity === 'spectating' || activity === 'observer' || activity === 'menu';
-  const isDead = (state?.health ?? 100) <= 0;
-  if (observer || isDead) return null;
-
-  if (health > 0 && health <= 0.3) {
-    return {
-      mode,
-      reason: 'lowHealth',
-      palette: scaleHealthPalette(palettes.lowHealth, health),
-      transitionSeconds: 0.3,
-      attackSeconds: 0,
-      holdSeconds: 0,
-      fadeSeconds: 0,
-    };
-  }
-
-  if (mode === 'competitive' && snapshot.round?.bomb?.toLowerCase() === 'planted') {
-    return bombPlantedDecision(mode, context);
-  }
-
-  return ambientDecision(snapshot);
+  return backgroundDecisionForSnapshot(snapshot, context)
+    ?? (effect.reason === 'death' ? deathFallbackDecision(snapshot) : ambientDecision(snapshot));
 }
 
 function ambientDecision(snapshot: Cs2GameStateSnapshot): Cs2LightingDecision {

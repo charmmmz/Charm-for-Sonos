@@ -42,6 +42,30 @@ test('CS2 decision ignores competitive observer state instead of taking over lig
   assert.equal(decision, null);
 });
 
+test('CS2 decision ignores observer state before transient effects', () => {
+  const decision = buildCs2LightingDecision(snapshot({
+    player: {
+      team: 'CT',
+      activity: 'Spectating',
+      state: { health: 100, burning: 1, flashed: 1 },
+    },
+  }));
+
+  assert.equal(decision, null);
+});
+
+test('CS2 decision ignores already-dead residual effects', () => {
+  const decision = buildCs2LightingDecision(snapshot({
+    player: {
+      team: 'CT',
+      activity: 'Playing',
+      state: { health: 0, burning: 1, flashed: 1 },
+    },
+  }));
+
+  assert.equal(decision, null);
+});
+
 test('CS2 kill effect uses a short non-green burst', () => {
   const previous = snapshot({
     player: { state: { round_kills: 0, health: 100, burning: 0, flashed: 0 } },
@@ -75,6 +99,60 @@ test('CS2 decision uses separate deathmatch damage strategy', () => {
   assert.equal(decision.reason, 'damage');
   assert.equal(decision.transitionSeconds, 0.1);
   assert.deepEqual(decision.palette[0], { r: 1, g: 0.05, b: 0.02 });
+});
+
+test('CS2 low health keeps CT background blue instead of becoming red ambience', () => {
+  const decision = buildCs2LightingDecision(snapshot({
+    player: {
+      team: 'CT',
+      state: { health: 18, burning: 0, flashed: 0 },
+    },
+  }));
+
+  assert.equal(decision?.reason, 'lowHealth');
+  const color = decision?.palette[0];
+  assert(color && color.b > color.r);
+});
+
+test('CS2 planted bomb remains the background priority over low health', () => {
+  const plantedAt = new Date('2026-05-12T09:30:00.000Z');
+  const decision = buildCs2LightingDecision(snapshot({
+    receivedAt: plantedAt,
+    round: { bomb: 'planted' },
+    player: {
+      team: 'CT',
+      state: { health: 18, burning: 0, flashed: 0 },
+    },
+  }), undefined, { bombPlantedAt: plantedAt.getTime(), nowMs: plantedAt.getTime() });
+
+  assert.equal(decision?.reason, 'bombPlanted');
+});
+
+test('CS2 round freeze is a dim team background state', () => {
+  const decision = buildCs2LightingDecision(snapshot({
+    round: { phase: 'freezetime' },
+    player: {
+      team: 'CT',
+      state: { health: 100, burning: 0, flashed: 0 },
+    },
+  }));
+
+  assert.equal(decision?.reason, 'roundFreeze');
+  const color = decision?.palette[0];
+  assert(color && color.b > color.r);
+  assert(color && maxChannel(color) < 0.3);
+});
+
+test('CS2 round over ends planted bomb background', () => {
+  const decision = buildCs2LightingDecision(snapshot({
+    round: { phase: 'over', bomb: 'planted' },
+    player: {
+      team: 'CT',
+      state: { health: 100, burning: 0, flashed: 0 },
+    },
+  }));
+
+  assert.equal(decision?.reason, 'roundOver');
 });
 
 test('CS2 lighting service renders enabled game state to mapped entertainment area', async () => {
@@ -308,6 +386,82 @@ test('CS2 flash effect attacks from team color to white and releases back smooth
     assert.deepEqual(peak, { r: 1, g: 1, b: 1 });
     assert(release && release.r > ambient!.r && release.r < 1);
     assert.deepEqual(restored, ambient);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('CS2 damage overlay restores to low-health CT background', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'cs2-lighting-'));
+  try {
+    const store = new HueAmbienceConfigStore(dir);
+    await store.save(config);
+    const renderer = new RecordingHueAmbienceRenderer();
+    let now = new Date('2026-05-12T09:30:00.000Z').getTime();
+    const service = new Cs2LightingService(store, () => renderer, {
+      minRenderIntervalMs: 0,
+      now: () => now,
+    });
+
+    await service.receive(snapshot({
+      receivedAt: new Date(now),
+      player: { team: 'CT', state: { health: 100, burning: 0, flashed: 0 } },
+    }));
+
+    now += 10;
+    await service.receive(snapshot({
+      receivedAt: new Date(now),
+      player: { team: 'CT', state: { health: 18, burning: 0, flashed: 0 } },
+    }));
+
+    now += 1000;
+    await service.receive(snapshot({
+      receivedAt: new Date(now),
+      player: { team: 'CT', state: { health: 18, burning: 0, flashed: 0 } },
+    }));
+    const restored = renderer.renderedFrames.at(-1)?.targets[0]?.lights[0]?.colors[0];
+
+    assert(restored && restored.b > restored.r);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('CS2 flash overlay restores to planted bomb background', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'cs2-lighting-'));
+  try {
+    const store = new HueAmbienceConfigStore(dir);
+    await store.save(config);
+    const renderer = new RecordingHueAmbienceRenderer();
+    let now = new Date('2026-05-12T09:30:00.000Z').getTime();
+    const service = new Cs2LightingService(store, () => renderer, {
+      minRenderIntervalMs: 0,
+      now: () => now,
+    });
+
+    await service.receive(snapshot({
+      receivedAt: new Date(now),
+      round: { bomb: 'planted' },
+      player: { team: 'CT', state: { health: 100, burning: 0, flashed: 0 } },
+    }));
+    const bombBackground = renderer.renderedFrames.at(-1)?.targets[0]?.lights[0]?.colors[0];
+
+    now += 20;
+    await service.receive(snapshot({
+      receivedAt: new Date(now),
+      round: { bomb: 'planted' },
+      player: { team: 'CT', state: { health: 100, burning: 0, flashed: 1 } },
+    }));
+
+    now += 1000;
+    await service.receive(snapshot({
+      receivedAt: new Date(now),
+      round: { bomb: 'planted' },
+      player: { team: 'CT', state: { health: 100, burning: 0, flashed: 0 } },
+    }));
+    const restoredFrame = renderer.renderedFrames.at(-1);
+
+    assert.deepEqual(restoredFrame?.targets[0]?.lights[0]?.colors[0], bombBackground);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
