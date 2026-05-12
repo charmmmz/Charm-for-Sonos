@@ -30,7 +30,7 @@ test('CS2 decision gives burning priority over simultaneous health damage', () =
   assert.deepEqual(decision.palette[0], { r: 1, g: 0.28, b: 0 });
 });
 
-test('CS2 decision keeps competitive spectators in low brightness ambience', () => {
+test('CS2 decision ignores competitive observer state instead of taking over lights', () => {
   const decision = buildCs2LightingDecision(snapshot({
     player: {
       team: 'CT',
@@ -39,10 +39,22 @@ test('CS2 decision keeps competitive spectators in low brightness ambience', () 
     },
   }));
 
-  assert.equal(decision.mode, 'spectatorAmbient');
-  assert.equal(decision.reason, 'spectator');
-  assert(decision.palette.every(color => maxChannel(color) <= 0.18));
-  assert.equal(decision.transitionSeconds, 0.5);
+  assert.equal(decision, null);
+});
+
+test('CS2 kill effect uses a non-green confirmation palette with a visible hold', () => {
+  const previous = snapshot({
+    player: { state: { round_kills: 0, health: 100, burning: 0, flashed: 0 } },
+  });
+  const current = snapshot({
+    player: { state: { round_kills: 1, health: 100, burning: 0, flashed: 0 } },
+  });
+
+  const decision = buildCs2LightingDecision(current, previous);
+
+  assert.equal(decision?.reason, 'kill');
+  assert(decision.holdSeconds >= 0.5);
+  assert(decision.palette.every(color => color.g <= Math.max(color.r, color.b)));
 });
 
 test('CS2 decision uses separate deathmatch damage strategy', () => {
@@ -59,7 +71,7 @@ test('CS2 decision uses separate deathmatch damage strategy', () => {
 
   assert.equal(decision.mode, 'deathmatch');
   assert.equal(decision.reason, 'damage');
-  assert.equal(decision.transitionSeconds, 0.08);
+  assert.equal(decision.transitionSeconds, 0.1);
   assert.deepEqual(decision.palette[0], { r: 1, g: 0.05, b: 0.02 });
 });
 
@@ -80,7 +92,7 @@ test('CS2 lighting service renders enabled game state to mapped entertainment ar
     assert.equal(frame.mode, 'streamingReady');
     assert.equal(frame.targets[0]?.area.id, 'ent-1');
     assert.deepEqual(frame.targets[0]?.lights[0]?.colors[0], { r: 1, g: 1, b: 1 });
-    assert.equal(frame.transitionSeconds, 0.05);
+    assert.equal(frame.transitionSeconds, 0.12);
     assert.deepEqual(service.status(), {
       enabled: true,
       active: true,
@@ -173,6 +185,62 @@ test('CS2 lighting service keeps duplicate game state active without re-renderin
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+test('CS2 lighting service holds kill effect instead of immediately reverting to ambient', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'cs2-lighting-'));
+  try {
+    const store = new HueAmbienceConfigStore(dir);
+    await store.save(config);
+    const renderer = new RecordingHueAmbienceRenderer();
+    let now = new Date('2026-05-12T09:30:00.000Z').getTime();
+    const service = new Cs2LightingService(store, () => renderer, {
+      minRenderIntervalMs: 0,
+      now: () => now,
+    });
+
+    await service.receive(snapshot({
+      receivedAt: new Date(now),
+      player: { state: { round_kills: 0, health: 100, burning: 0, flashed: 0 } },
+    }));
+    now += 10;
+    await service.receive(snapshot({
+      receivedAt: new Date(now),
+      player: { state: { round_kills: 1, health: 100, burning: 0, flashed: 0 } },
+    }));
+    now += 120;
+    await service.receive(snapshot({
+      receivedAt: new Date(now),
+      player: { state: { round_kills: 1, health: 100, burning: 0, flashed: 0 } },
+    }));
+
+    assert.equal(renderer.renderedFrames.length, 2);
+    assert.deepEqual(renderer.renderedFrames.at(-1)?.targets[0]?.lights[0]?.colors[0], {
+      r: 1,
+      g: 0.72,
+      b: 0.12,
+    });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('CS2 planted bomb effect changes blink frame as the detonation window advances', () => {
+  const plantedAt = new Date('2026-05-12T09:30:00.000Z');
+  const first = buildCs2LightingDecision(snapshot({
+    receivedAt: plantedAt,
+    round: { bomb: 'planted' },
+  }), undefined, { bombPlantedAt: plantedAt.getTime(), nowMs: plantedAt.getTime() });
+
+  const later = buildCs2LightingDecision(snapshot({
+    receivedAt: new Date(plantedAt.getTime() + 15_000),
+    round: { bomb: 'planted' },
+  }), undefined, { bombPlantedAt: plantedAt.getTime(), nowMs: plantedAt.getTime() + 15_000 });
+
+  assert.equal(first?.reason, 'bombPlanted');
+  assert.equal(later?.reason, 'bombPlanted');
+  assert.notEqual(first?.dynamicKey, later?.dynamicKey);
+  assert.notDeepEqual(first?.palette, later?.palette);
 });
 
 const config: HueAmbienceRuntimeConfig = {

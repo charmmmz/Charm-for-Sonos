@@ -1,12 +1,12 @@
 enum SettingsHubDestination: String, CaseIterable, Hashable, Identifiable {
     case sonos
     case hueAmbience
-    case localServer
+    case hubSetup
 
     static let primary: [SettingsHubDestination] = [
         .sonos,
         .hueAmbience,
-        .localServer,
+        .hubSetup,
     ]
 
     var id: Self { self }
@@ -17,8 +17,8 @@ enum SettingsHubDestination: String, CaseIterable, Hashable, Identifiable {
             return "Sonos"
         case .hueAmbience:
             return "Hue Ambience"
-        case .localServer:
-            return "Local Server"
+        case .hubSetup:
+            return "Hub Setup"
         }
     }
 
@@ -27,9 +27,9 @@ enum SettingsHubDestination: String, CaseIterable, Hashable, Identifiable {
         case .sonos:
             return "Account, speakers, and music services"
         case .hueAmbience:
-            return "Hue Bridge, sync status, music, and game lighting"
-        case .localServer:
-            return "Relay, Live Activity, and NAS Agent"
+            return "Music and game lighting"
+        case .hubSetup:
+            return "Hue Bridge, NAS Relay, and NAS Agent"
         }
     }
 
@@ -39,8 +39,8 @@ enum SettingsHubDestination: String, CaseIterable, Hashable, Identifiable {
             return "hifispeaker.2.fill"
         case .hueAmbience:
             return "sparkles"
-        case .localServer:
-            return "server.rack"
+        case .hubSetup:
+            return "externaldrive.connected.to.line.below"
         }
     }
 }

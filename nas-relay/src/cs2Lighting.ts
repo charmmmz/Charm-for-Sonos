@@ -10,7 +10,7 @@ import type {
   HueResolvedAmbienceTarget,
 } from './hueTypes.js';
 
-export type Cs2LightingMode = 'idle' | 'deathmatch' | 'competitive' | 'spectatorAmbient' | 'unknown';
+export type Cs2LightingMode = 'idle' | 'deathmatch' | 'competitive' | 'unknown';
 
 export interface Cs2LightingDecision {
   mode: Exclude<Cs2LightingMode, 'idle' | 'unknown'>;
@@ -22,10 +22,17 @@ export interface Cs2LightingDecision {
     | 'death'
     | 'flash'
     | 'kill'
-    | 'lowHealth'
-    | 'spectator';
+    | 'lowHealth';
   palette: HueRGBColor[];
   transitionSeconds: number;
+  holdSeconds: number;
+  fadeSeconds: number;
+  dynamicKey?: string;
+}
+
+export interface Cs2LightingDecisionContext {
+  bombPlantedAt?: number | null;
+  nowMs?: number;
 }
 
 export interface Cs2LightingStatus {
@@ -40,10 +47,12 @@ interface Cs2LightingServiceOptions {
   activeTimeoutMs?: number;
   minRenderIntervalMs?: number;
   beforeRender?: () => Promise<void> | void;
+  now?: () => number;
 }
 
 const defaultActiveTimeoutMs = 3_000;
 const defaultMinRenderIntervalMs = 70;
+const c4FuseMs = 40_000;
 
 const palettes = {
   flash: [
@@ -60,8 +69,9 @@ const palettes = {
     { r: 0.45, g: 0, b: 0 },
   ],
   kill: [
-    { r: 0.18, g: 1, b: 0.32 },
-    { r: 0.04, g: 0.35, b: 0.12 },
+    { r: 1, g: 0.72, b: 0.12 },
+    { r: 1, g: 0.25, b: 0.04 },
+    { r: 0.55, g: 0.02, b: 0 },
   ],
   bomb: [
     { r: 1, g: 0.16, b: 0.03 },
@@ -80,15 +90,12 @@ const palettes = {
     { r: 0.48, g: 0.18, b: 0.02 },
     { r: 0.22, g: 0.06, b: 0 },
   ],
-  ctSpectator: [
-    { r: 0.08, g: 0.14, b: 0.18 },
-    { r: 0.03, g: 0.08, b: 0.12 },
-  ],
-  tSpectator: [
-    { r: 0.18, g: 0.1, b: 0.03 },
-    { r: 0.1, g: 0.04, b: 0 },
-  ],
 } satisfies Record<string, HueRGBColor[]>;
+
+interface HeldCs2Effect {
+  decision: Cs2LightingDecision;
+  startedAtMs: number;
+}
 
 export class Cs2LightingService {
   private previousByProvider = new Map<string, Cs2GameStateSnapshot>();
@@ -102,6 +109,8 @@ export class Cs2LightingService {
   private activeRenderer: HueAmbienceRenderer | null = null;
   private activeRendererConfigKey: string | null = null;
   private inactiveStopTimer: NodeJS.Timeout | null = null;
+  private heldEffects = new Map<string, HeldCs2Effect>();
+  private bombPlantedAtByProvider = new Map<string, number>();
 
   constructor(
     private readonly store: HueAmbienceConfigStore,
@@ -115,6 +124,7 @@ export class Cs2LightingService {
   async receive(snapshot: Cs2GameStateSnapshot): Promise<void> {
     const previous = this.previousByProvider.get(snapshot.providerSteamId);
     this.previousByProvider.set(snapshot.providerSteamId, snapshot);
+    const now = this.options.now?.() ?? Date.now();
 
     const config = this.store.current;
     if (!config?.cs2LightingEnabled) {
@@ -130,14 +140,19 @@ export class Cs2LightingService {
       return;
     }
 
-    const decision = buildCs2LightingDecision(snapshot, previous);
-    if (decision.mode === 'spectatorAmbient' && gameMode(snapshot) === 'deathmatch') {
+    this.updateBombClock(snapshot, previous, now);
+    const baseDecision = buildCs2LightingDecision(snapshot, previous, {
+      bombPlantedAt: this.bombPlantedAtByProvider.get(snapshot.providerSteamId),
+      nowMs: now,
+    });
+    if (!baseDecision) {
       this.clearActive(true);
+      this.heldEffects.delete(snapshot.providerSteamId);
       this.fallbackReason = null;
       return;
     }
 
-    const now = Date.now();
+    const decision = this.decisionWithHeldEffect(snapshot.providerSteamId, baseDecision, now);
     const signature = frameSignature(decision, snapshot);
     if (signature === this.lastRenderSignature) {
       if (this.activeFrame) {
@@ -146,7 +161,8 @@ export class Cs2LightingService {
       }
       return;
     }
-    if (now - this.lastRenderAttemptAt < (this.options.minRenderIntervalMs ?? defaultMinRenderIntervalMs)) {
+    if (!isPriorityDecision(decision)
+      && now - this.lastRenderAttemptAt < (this.options.minRenderIntervalMs ?? defaultMinRenderIntervalMs)) {
       return;
     }
 
@@ -242,6 +258,55 @@ export class Cs2LightingService {
     this.lastRenderedAt = null;
     this.lastRenderSignature = null;
   }
+
+  private updateBombClock(
+    snapshot: Cs2GameStateSnapshot,
+    previous: Cs2GameStateSnapshot | undefined,
+    now: number,
+  ): void {
+    const provider = snapshot.providerSteamId;
+    const bomb = snapshot.round?.bomb?.toLowerCase();
+    const previousBomb = previous?.round?.bomb?.toLowerCase();
+    if (bomb === 'planted') {
+      if (previousBomb !== 'planted' || !this.bombPlantedAtByProvider.has(provider)) {
+        this.bombPlantedAtByProvider.set(provider, now);
+      }
+      return;
+    }
+    this.bombPlantedAtByProvider.delete(provider);
+  }
+
+  private decisionWithHeldEffect(
+    providerSteamId: string,
+    decision: Cs2LightingDecision,
+    now: number,
+  ): Cs2LightingDecision {
+    if (isHeldEventDecision(decision)) {
+      this.heldEffects.set(providerSteamId, { decision, startedAtMs: now });
+      return decision;
+    }
+
+    const held = this.heldEffects.get(providerSteamId);
+    if (!held) return decision;
+
+    const heldMs = held.decision.holdSeconds * 1000;
+    const fadeMs = held.decision.fadeSeconds * 1000;
+    const elapsed = now - held.startedAtMs;
+    if (elapsed <= heldMs) return held.decision;
+    if (elapsed <= heldMs + fadeMs) {
+      const progress = fadeMs > 0 ? (elapsed - heldMs) / fadeMs : 1;
+      return {
+        ...decision,
+        reason: held.decision.reason,
+        palette: blendPalettes(held.decision.palette, decision.palette, smoothstep(progress)),
+        transitionSeconds: Math.max(decision.transitionSeconds, 0.18),
+        dynamicKey: `${held.decision.reason}:fade:${Math.floor(progress * 10)}`,
+      };
+    }
+
+    this.heldEffects.delete(providerSteamId);
+    return decision;
+  }
 }
 
 function createCs2HueRenderer(config: HueAmbienceRuntimeConfig): HueAmbienceRenderer {
@@ -255,29 +320,23 @@ function createCs2HueRenderer(config: HueAmbienceRuntimeConfig): HueAmbienceRend
 export function buildCs2LightingDecision(
   snapshot: Cs2GameStateSnapshot,
   previous?: Cs2GameStateSnapshot,
-): Cs2LightingDecision {
+  context: Cs2LightingDecisionContext = {},
+): Cs2LightingDecision | null {
   const mode = gameMode(snapshot);
   const state = snapshot.player?.state;
   const health = clamp01((state?.health ?? 100) / 100);
   const activity = snapshot.player?.activity?.toLowerCase();
   const isDead = (state?.health ?? 100) <= 0;
-  const spectator = activity === 'spectating' || activity === 'observer' || activity === 'menu' || isDead;
-
-  if (mode === 'competitive' && spectator) {
-    return {
-      mode: 'spectatorAmbient',
-      reason: 'spectator',
-      palette: spectatorPalette(snapshot),
-      transitionSeconds: 0.5,
-    };
-  }
+  const observer = activity === 'spectating' || activity === 'observer' || activity === 'menu';
 
   if ((state?.flashed ?? 0) > 0) {
     return {
       mode,
       reason: 'flash',
       palette: palettes.flash,
-      transitionSeconds: 0.05,
+      transitionSeconds: 0.12,
+      holdSeconds: 0.18,
+      fadeSeconds: 0.3,
     };
   }
 
@@ -287,6 +346,8 @@ export function buildCs2LightingDecision(
       reason: 'burning',
       palette: palettes.burning,
       transitionSeconds: mode === 'deathmatch' ? 0.08 : 0.12,
+      holdSeconds: 0.2,
+      fadeSeconds: 0.4,
     };
   }
 
@@ -295,25 +356,33 @@ export function buildCs2LightingDecision(
       mode,
       reason: 'damage',
       palette: palettes.damage,
-      transitionSeconds: mode === 'deathmatch' ? 0.08 : 0.12,
+      transitionSeconds: mode === 'deathmatch' ? 0.1 : 0.14,
+      holdSeconds: mode === 'deathmatch' ? 0.28 : 0.4,
+      fadeSeconds: mode === 'deathmatch' ? 0.35 : 0.55,
     };
   }
 
-  if (isDead) {
+  if (isDeathEvent(snapshot, previous)) {
     return {
       mode,
       reason: 'death',
       palette: dim(palettes.damage, 0.28),
       transitionSeconds: 0.25,
+      holdSeconds: 0.65,
+      fadeSeconds: 0.8,
     };
   }
+
+  if (observer || isDead) return null;
 
   if (killsIncreased(snapshot, previous)) {
     return {
       mode,
       reason: 'kill',
       palette: palettes.kill,
-      transitionSeconds: mode === 'deathmatch' ? 0.1 : 0.16,
+      transitionSeconds: mode === 'deathmatch' ? 0.14 : 0.2,
+      holdSeconds: mode === 'deathmatch' ? 0.5 : 0.65,
+      fadeSeconds: mode === 'deathmatch' ? 0.55 : 0.75,
     };
   }
 
@@ -323,16 +392,13 @@ export function buildCs2LightingDecision(
       reason: 'lowHealth',
       palette: scaleHealthPalette(palettes.lowHealth, health),
       transitionSeconds: 0.3,
+      holdSeconds: 0,
+      fadeSeconds: 0,
     };
   }
 
   if (mode === 'competitive' && snapshot.round?.bomb?.toLowerCase() === 'planted') {
-    return {
-      mode,
-      reason: 'bombPlanted',
-      palette: palettes.bomb,
-      transitionSeconds: 0.2,
-    };
+    return bombPlantedDecision(mode, context);
   }
 
   return {
@@ -340,6 +406,8 @@ export function buildCs2LightingDecision(
     reason: 'ambient',
     palette: teamAmbientPalette(snapshot),
     transitionSeconds: mode === 'deathmatch' ? 0.18 : 0.28,
+    holdSeconds: 0,
+    fadeSeconds: 0,
   };
 }
 
@@ -426,10 +494,6 @@ function teamAmbientPalette(snapshot: Cs2GameStateSnapshot): HueRGBColor[] {
   return snapshot.player?.team?.toUpperCase() === 'T' ? palettes.tAmbient : palettes.ctAmbient;
 }
 
-function spectatorPalette(snapshot: Cs2GameStateSnapshot): HueRGBColor[] {
-  return snapshot.player?.team?.toUpperCase() === 'T' ? palettes.tSpectator : palettes.ctSpectator;
-}
-
 function scaleHealthPalette(palette: HueRGBColor[], health: number): HueRGBColor[] {
   const scale = 0.35 + (1 - health) * 0.35;
   return dim(palette, scale);
@@ -447,6 +511,7 @@ function frameSignature(decision: Cs2LightingDecision, snapshot: Cs2GameStateSna
   return [
     decision.mode,
     decision.reason,
+    decision.dynamicKey,
     snapshot.player?.team,
     snapshot.player?.state?.health,
     snapshot.player?.state?.flashed,
@@ -455,6 +520,72 @@ function frameSignature(decision: Cs2LightingDecision, snapshot: Cs2GameStateSna
     snapshot.player?.match_stats?.kills,
     snapshot.round?.bomb,
   ].join('|');
+}
+
+function bombPlantedDecision(
+  mode: Exclude<Cs2LightingMode, 'idle' | 'unknown'>,
+  context: Cs2LightingDecisionContext,
+): Cs2LightingDecision {
+  const nowMs = context.nowMs ?? Date.now();
+  const plantedAt = context.bombPlantedAt ?? nowMs;
+  const elapsed = Math.max(0, Math.min(c4FuseMs, nowMs - plantedAt));
+  const urgency = elapsed / c4FuseMs;
+  const periodMs = 900 - (urgency * 720);
+  const phase = (elapsed % periodMs) / periodMs;
+  const lit = phase < 0.24;
+  const baseIntensity = lit ? 1 : 0.18 + (urgency * 0.22);
+  const palette = lit ? palettes.bomb : dim(palettes.bomb, baseIntensity);
+
+  return {
+    mode,
+    reason: 'bombPlanted',
+    palette,
+    transitionSeconds: Math.max(0.04, Math.min(0.18, periodMs / 1000 * 0.22)),
+    holdSeconds: 0,
+    fadeSeconds: 0,
+    dynamicKey: `bomb:${Math.floor(elapsed / periodMs)}:${lit ? 'on' : 'off'}`,
+  };
+}
+
+function isDeathEvent(snapshot: Cs2GameStateSnapshot, previous?: Cs2GameStateSnapshot): boolean {
+  const currentHealth = snapshot.player?.state?.health;
+  const previousHealth = previous?.player?.state?.health;
+  return Number.isFinite(currentHealth)
+    && (currentHealth as number) <= 0
+    && Number.isFinite(previousHealth)
+    && (previousHealth as number) > 0;
+}
+
+function isPriorityDecision(decision: Cs2LightingDecision): boolean {
+  return decision.reason !== 'ambient' && decision.reason !== 'lowHealth';
+}
+
+function isHeldEventDecision(decision: Cs2LightingDecision): boolean {
+  return decision.holdSeconds > 0 || decision.fadeSeconds > 0;
+}
+
+function blendPalettes(from: HueRGBColor[], to: HueRGBColor[], progress: number): HueRGBColor[] {
+  const count = Math.max(from.length, to.length, 1);
+  const blended: HueRGBColor[] = [];
+  for (let index = 0; index < count; index += 1) {
+    const a = from[index % from.length] ?? { r: 0, g: 0, b: 0 };
+    const b = to[index % to.length] ?? a;
+    blended.push({
+      r: lerp(a.r, b.r, progress),
+      g: lerp(a.g, b.g, progress),
+      b: lerp(a.b, b.b, progress),
+    });
+  }
+  return blended;
+}
+
+function smoothstep(value: number): number {
+  const t = clamp01(value);
+  return t * t * (3 - (2 * t));
+}
+
+function lerp(from: number, to: number, progress: number): number {
+  return clamp01(from + ((to - from) * progress));
 }
 
 function clamp01(value: number): number {

@@ -25,9 +25,10 @@ struct SettingsView: View {
     @Bindable private var hueStore = HueAmbienceStore.shared
     @Bindable private var musicAmbience = MusicAmbienceManager.shared
     @State private var musicAmbienceSetupPresentation = MusicAmbienceSetupPresentationState()
+    @State private var settingsPath: [SettingsHubDestination] = []
 
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $settingsPath) {
             Form {
                 settingsHubSection
                 aboutSection
@@ -100,12 +101,13 @@ struct SettingsView: View {
                     manager: musicAmbience,
                     sonosSpeakers: displayedSpeakers,
                     presentSetup: {
-                        musicAmbienceSetupPresentation.present()
+                        settingsPath.append(.hubSetup)
                     }
                 )
             }
-        case .localServer:
+        case .hubSetup:
             settingsDetailForm(title: destination.title) {
+                hueBridgeSetupSection
                 relaySection
                 agentSection
             }
@@ -135,8 +137,8 @@ struct SettingsView: View {
             return "\(sonosAccountStatusSummary) · \(speakersStatusSummary)"
         case .hueAmbience:
             return musicAmbienceStatusSummary
-        case .localServer:
-            return "Relay \(relayStatusTitle) · Agent \(agentStatusTitle)"
+        case .hubSetup:
+            return "\(hueBridgeStatusSummary) · Relay \(relayStatusTitle) · Agent \(agentStatusTitle)"
         }
     }
 
@@ -173,6 +175,14 @@ struct SettingsView: View {
         let assignmentCount = hueStore.mappings.count
         let assignments = assignmentCount == 1 ? "1 assignment" : "\(assignmentCount) assignments"
         return "\(musicAmbience.status.title) · \(assignments)"
+    }
+
+    private var hueBridgeStatusSummary: String {
+        guard let bridge = hueStore.bridge else {
+            return "Bridge not paired"
+        }
+
+        return "\(bridge.name) · \(hueStore.mappings.count) assignment\(hueStore.mappings.count == 1 ? "" : "s")"
     }
 
     private var musicAmbienceSetupBinding: Binding<Bool> {
@@ -505,6 +515,39 @@ struct SettingsView: View {
                 set: { searchManager.setServiceEnabled(serviceId: sid, enabled: $0) }
             ))
             .labelsHidden()
+        }
+    }
+
+    // MARK: - Hub Setup
+
+    @ViewBuilder
+    private var hueBridgeSetupSection: some View {
+        Section {
+            if let bridge = hueStore.bridge {
+                LabeledContent("Bridge", value: "\(bridge.name) · \(bridge.ipAddress)")
+                LabeledContent("Assignments", value: "\(hueStore.mappings.count)")
+                LabeledContent("Entertainment", value: relay.hueEntertainmentStreamingStatus.label)
+                Text(relay.hueEntertainmentStreamingDetail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(3)
+            } else {
+                Label("No Hue Bridge paired", systemImage: "lightbulb.slash")
+                    .foregroundStyle(.secondary)
+            }
+
+            Button {
+                musicAmbienceSetupPresentation.present()
+            } label: {
+                Label(
+                    hueStore.bridge == nil ? "Set Up Hue Bridge" : "Manage Hue Bridge",
+                    systemImage: "link.badge.plus"
+                )
+            }
+        } header: {
+            Text("Hue Bridge")
+        } footer: {
+            Text("Pair, refresh, remove, or re-pair your Hue Bridge here. The Entertainment streaming client key is generated during pairing and synced to the relay.")
         }
     }
 

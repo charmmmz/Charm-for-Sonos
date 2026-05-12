@@ -90,8 +90,8 @@ struct MusicAmbienceSettingsView: View {
                 presentSetup()
             } label: {
                 Label(
-                    store.bridge == nil ? "Set Up Hue Bridge" : "Edit Hue Assignments",
-                    systemImage: "sparkles"
+                    store.bridge == nil ? "Set Up in Hub Setup" : "Manage in Hub Setup",
+                    systemImage: "externaldrive.connected.to.line.below"
                 )
             }
 
@@ -322,12 +322,12 @@ struct HueAmbienceSetupSheet: View {
             .onAppear {
                 loadStoredBridgeState()
             }
-            .confirmationDialog("Reset Hue Ambience?", isPresented: $isResetConfirmationPresented) {
-                Button("Reset Hue Ambience", role: .destructive) {
+            .confirmationDialog("Remove Hue Bridge?", isPresented: $isResetConfirmationPresented) {
+                Button("Remove Bridge", role: .destructive) {
                     Task { await resetMusicAmbience() }
                 }
             } message: {
-                Text("This clears the paired Hue Bridge, assignments, cached Hue resources, and the NAS relay Hue Ambience config.")
+                Text("This clears the paired Hue Bridge, assignments, cached Hue resources, and the NAS relay Hue Ambience config. Pair again after pressing the Hue Bridge button.")
             }
         }
     }
@@ -362,7 +362,7 @@ struct HueAmbienceSetupSheet: View {
                     Button(role: .destructive) {
                         isResetConfirmationPresented = true
                     } label: {
-                        Label("Reset", systemImage: "trash")
+                        Label("Remove Bridge", systemImage: "trash")
                     }
                     .buttonStyle(.borderless)
                     .disabled(isBusy)
@@ -410,7 +410,7 @@ struct HueAmbienceSetupSheet: View {
         } header: {
             Text("Connection")
         } footer: {
-            Text("Refresh Hue Data reloads Bridge resources and cleans stale assignments. Reset clears local and NAS Hue Ambience data.")
+            Text("Refresh Hue Data reloads Bridge resources and cleans stale assignments. Remove Bridge clears local and NAS Hue Ambience data so you can re-pair.")
         }
     }
 
