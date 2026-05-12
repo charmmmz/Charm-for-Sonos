@@ -615,6 +615,34 @@ test('CS2 background transition settles without another game state post', async 
   }
 });
 
+test('CS2 lighting service keeps Hue streaming warm during static ambience', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'cs2-lighting-'));
+  try {
+    const store = new HueAmbienceConfigStore(dir);
+    await store.save(config);
+    const renderer = new RecordingHueAmbienceRenderer();
+    const service = new Cs2LightingService(store, () => renderer, {
+      activeTimeoutMs: 500,
+      streamKeepaliveIntervalMs: 30,
+    });
+
+    await service.receive(snapshot({
+      player: { team: 'CT', state: { health: 100, burning: 0, flashed: 0 } },
+    }));
+
+    await new Promise(resolve => setTimeout(resolve, 95));
+
+    assert(renderer.renderedFrames.length >= 3);
+    assert.deepEqual(
+      renderer.renderedFrames.at(-1)?.targets[0]?.lights[0]?.colors[0],
+      renderer.renderedFrames[0]?.targets[0]?.lights[0]?.colors[0],
+    );
+    assert.equal(service.status().active, true);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test('CS2 flash effect attacks from team color to white and releases back smoothly', async () => {
   const dir = await mkdtemp(path.join(tmpdir(), 'cs2-lighting-'));
   try {

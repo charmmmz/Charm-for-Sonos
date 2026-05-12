@@ -59,6 +59,7 @@ interface Cs2LightingLogger {
 interface Cs2LightingServiceOptions {
   activeTimeoutMs?: number;
   minRenderIntervalMs?: number;
+  streamKeepaliveIntervalMs?: number;
   beforeRender?: () => Promise<void> | void;
   now?: () => number;
   logger?: Cs2LightingLogger;
@@ -67,6 +68,7 @@ interface Cs2LightingServiceOptions {
 
 const defaultActiveTimeoutMs = 60_000;
 const defaultMinRenderIntervalMs = 70;
+const defaultStreamKeepaliveIntervalMs = 2_000;
 const animationFrameIntervalMs = 40;
 const c4FuseMs = 40_000;
 
@@ -140,6 +142,8 @@ export class Cs2LightingService {
   private activeRenderer: HueAmbienceRenderer | null = null;
   private activeRendererConfigKey: string | null = null;
   private inactiveStopTimer: NodeJS.Timeout | null = null;
+  private streamKeepaliveTimer: NodeJS.Timeout | null = null;
+  private streamKeepaliveInFlight = false;
   private animationTimer: NodeJS.Timeout | null = null;
   private animationContext: {
     providerSteamId: string;
@@ -291,6 +295,7 @@ export class Cs2LightingService {
   private async stopActiveRenderer(): Promise<void> {
     this.cancelInactiveStop();
     this.cancelAnimation();
+    this.cancelStreamKeepalive();
     const renderer = this.activeRenderer;
     const frame = this.activeFrame;
     this.activeRenderer = null;
@@ -303,6 +308,7 @@ export class Cs2LightingService {
   private clearActive(stopRenderer = false): void {
     this.cancelInactiveStop();
     this.cancelAnimation();
+    this.cancelStreamKeepalive();
     if (stopRenderer) {
       void this.stopActiveRenderer();
     }
@@ -343,6 +349,7 @@ export class Cs2LightingService {
     if (providerSteamId) {
       this.displayedDecisionByProvider.set(providerSteamId, decision);
     }
+    this.scheduleStreamKeepalive();
     if (refreshActiveDeadline) {
       this.lastRenderedAt = frame.createdAt;
       this.scheduleInactiveStop();
@@ -444,6 +451,67 @@ export class Cs2LightingService {
       this.animationTimer = null;
     }
     this.animationContext = null;
+  }
+
+  private scheduleStreamKeepalive(): void {
+    if (this.activeTransport !== 'entertainmentStreaming' || !this.activeFrame || !this.activeRenderer) return;
+    this.cancelStreamKeepalive();
+    this.streamKeepaliveTimer = setTimeout(() => {
+      this.streamKeepaliveTimer = null;
+      void this.renderStreamKeepalive();
+    }, this.options.streamKeepaliveIntervalMs ?? defaultStreamKeepaliveIntervalMs);
+    this.streamKeepaliveTimer.unref?.();
+  }
+
+  private cancelStreamKeepalive(): void {
+    if (!this.streamKeepaliveTimer) return;
+    clearTimeout(this.streamKeepaliveTimer);
+    this.streamKeepaliveTimer = null;
+  }
+
+  private async renderStreamKeepalive(): Promise<void> {
+    if (this.streamKeepaliveInFlight) return;
+    const frame = this.activeFrame;
+    const renderer = this.activeRenderer;
+    const providerSteamId = this.activeProviderSteamId;
+    if (!frame || !renderer || !providerSteamId) return;
+
+    const nowMs = this.options.now?.() ?? Date.now();
+    if (
+      this.lastGameStateAt
+      && nowMs - this.lastGameStateAt.getTime() > (this.options.activeTimeoutMs ?? defaultActiveTimeoutMs)
+    ) {
+      this.clearActive(true);
+      return;
+    }
+
+    this.streamKeepaliveInFlight = true;
+    try {
+      const keepaliveFrame = {
+        ...frame,
+        createdAt: new Date(nowMs),
+      };
+      const result = await renderer.render(keepaliveFrame);
+      if (result.transport !== 'entertainmentStreaming') {
+        throw new Error('CS2 lighting requires Hue Entertainment streaming');
+      }
+
+      this.activeFrame = keepaliveFrame;
+      this.activeTransport = result.transport;
+      this.fallbackReason = null;
+      this.lastRenderedAt = keepaliveFrame.createdAt;
+      this.scheduleStreamKeepalive();
+    } catch (err) {
+      const snapshot = this.previousByProvider.get(providerSteamId);
+      const decision = this.displayedDecisionByProvider.get(providerSteamId);
+      this.clearActive(true);
+      this.fallbackReason = `render_error:${errorMessageWithCauses(err)}`;
+      if (snapshot && decision) {
+        await this.logLightingRenderError(snapshot, null, null, decision, this.fallbackReason);
+      }
+    } finally {
+      this.streamKeepaliveInFlight = false;
+    }
   }
 
   private shouldAnimateProvider(providerSteamId: string, decision: Cs2LightingDecision): boolean {
