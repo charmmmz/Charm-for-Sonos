@@ -164,8 +164,9 @@ struct MusicAmbienceSettingsView: View {
     private var gameSection: some View {
         Section {
             Toggle("Enable CS2 Sync", isOn: $store.isCS2SyncEnabled)
-                .disabled(store.bridge == nil)
+                .disabled(store.bridge == nil || store.cs2EntertainmentAreaID == nil)
 
+            LabeledContent("CS2 Area", value: cs2AreaLabel)
             LabeledContent("CS2 Status", value: relay.cs2LightingMode.label)
             LabeledContent("CS2 Transport", value: relay.cs2LightingTransport.label)
             Text(relay.cs2LightingDetail)
@@ -174,7 +175,7 @@ struct MusicAmbienceSettingsView: View {
         } header: {
             Text("Game")
         } footer: {
-            Text("CS2 sync uses Hue Entertainment streaming when the Bridge session is free. If another Hue app owns streaming, music ambience can still use the existing fallback path.")
+            Text("Choose the CS2 Entertainment Area in Hub Setup. CS2 sync only uses Hue Entertainment streaming.")
         }
     }
 
@@ -198,8 +199,15 @@ struct MusicAmbienceSettingsView: View {
     private var canSyncToRelay: Bool {
         relay.url != nil
             && store.bridge != nil
-            && !store.mappings.isEmpty
+            && (!store.mappings.isEmpty || store.cs2EntertainmentAreaID != nil)
             && relay.hueAmbienceSyncStatus != .syncing
+    }
+
+    private var cs2AreaLabel: String {
+        guard let id = store.cs2EntertainmentAreaID else {
+            return "Not set"
+        }
+        return store.hueAreas.first { $0.id == id && $0.kind == .entertainmentArea }?.name ?? "Entertainment Area"
     }
 
     private var nasRelayStatusText: String {

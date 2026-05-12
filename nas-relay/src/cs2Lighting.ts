@@ -48,6 +48,8 @@ export interface Cs2LightingStatus {
   mode: Cs2LightingMode;
   transport: 'entertainmentStreaming' | 'unavailable';
   fallbackReason: string | null;
+  areaId: string | null;
+  areaName: string | null;
 }
 
 interface Cs2LightingLogger {
@@ -69,7 +71,7 @@ interface Cs2LightingServiceOptions {
 const defaultActiveTimeoutMs = 60_000;
 const defaultMinRenderIntervalMs = 70;
 const defaultStreamKeepaliveIntervalMs = 2_000;
-const animationFrameIntervalMs = 40;
+const animationFrameIntervalMs = 16;
 const c4FuseMs = 40_000;
 
 const palettes = {
@@ -243,6 +245,9 @@ export class Cs2LightingService {
 
   status(now: Date = new Date()): Cs2LightingStatus {
     const enabled = this.store.current?.cs2LightingEnabled === true;
+    const targetArea = this.store.current
+      ? resolveCs2EntertainmentTargets(this.store.current)[0]?.area ?? null
+      : null;
     const active = enabled
       && this.fallbackReason === null
       && this.activeFrame !== null
@@ -255,6 +260,8 @@ export class Cs2LightingService {
       mode: active ? this.activeMode : 'idle',
       transport: active ? this.activeTransport : 'unavailable',
       fallbackReason: this.fallbackReason,
+      areaId: targetArea?.id ?? null,
+      areaName: targetArea?.name ?? null,
     };
   }
 
@@ -984,27 +991,58 @@ function resolveCs2EntertainmentTargets(config: HueAmbienceRuntimeConfig): HueRe
   const seenAreaIDs = new Set<string>();
   const targets: HueResolvedAmbienceTarget[] = [];
 
+  if (config.cs2EntertainmentAreaId) {
+    const target = resolvedEntertainmentAreaTarget(
+      config.cs2EntertainmentAreaId,
+      config,
+      lightsByID,
+      {
+        sonosID: 'cs2',
+        sonosName: 'CS2',
+        relayGroupID: null,
+        preferredTarget: { kind: 'entertainmentArea', id: config.cs2EntertainmentAreaId },
+        fallbackTarget: null,
+        includedLightIDs: [],
+        excludedLightIDs: [],
+        capability: 'liveEntertainment',
+      },
+    );
+    return target ? [target] : [];
+  }
+
   for (const mapping of config.mappings) {
     const target = [mapping.preferredTarget, mapping.fallbackTarget]
       .find(candidate => candidate?.kind === 'entertainmentArea');
     if (!target || seenAreaIDs.has(target.id)) continue;
 
-    const area = config.resources.areas.find(candidate =>
-      candidate.id === target.id && candidate.kind === 'entertainmentArea',
-    );
-    if (!area) continue;
+    const resolved = resolvedEntertainmentAreaTarget(target.id, config, lightsByID, mapping);
+    if (!resolved) continue;
 
-    const lights = area.childLightIDs
-      .map(id => lightsByID.get(id))
-      .filter((light): light is NonNullable<typeof light> => Boolean(light))
-      .filter(light => light.supportsColor && light.supportsEntertainment);
-    if (lights.length === 0) continue;
-
-    seenAreaIDs.add(area.id);
-    targets.push({ area, mapping, lights });
+    seenAreaIDs.add(resolved.area.id);
+    targets.push(resolved);
   }
 
   return targets;
+}
+
+function resolvedEntertainmentAreaTarget(
+  areaId: string,
+  config: HueAmbienceRuntimeConfig,
+  lightsByID: Map<string, HueAmbienceRuntimeConfig['resources']['lights'][number]>,
+  mapping: HueAmbienceRuntimeConfig['mappings'][number],
+): HueResolvedAmbienceTarget | null {
+  const area = config.resources.areas.find(candidate =>
+    candidate.id === areaId && candidate.kind === 'entertainmentArea',
+  );
+  if (!area) return null;
+
+  const lights = area.childLightIDs
+    .map(id => lightsByID.get(id))
+    .filter((light): light is NonNullable<typeof light> => Boolean(light))
+    .filter(light => light.supportsColor && light.supportsEntertainment);
+  if (lights.length === 0) return null;
+
+  return { area, mapping, lights };
 }
 
 function gameMode(snapshot: Cs2GameStateSnapshot): Exclude<Cs2LightingMode, 'idle' | 'unknown' | 'spectatorAmbient'> {
@@ -1177,6 +1215,12 @@ function roundPhase(snapshot: Cs2GameStateSnapshot): string {
   return snapshot.round?.phase?.toLowerCase() ?? '';
 }
 
+export function c4BlinkIntervalMs(remainingMs: number): number {
+  const remainingSeconds = Math.max(0, Math.min(c4FuseMs, remainingMs)) / 1000;
+  const intervalMs = Math.max(150, (0.1 + (0.9 * remainingSeconds / (c4FuseMs / 1000))) * 1000);
+  return Math.round(intervalMs * 1000) / 1000;
+}
+
 function bombPlantedDecision(
   mode: Exclude<Cs2LightingMode, 'idle' | 'unknown'>,
   context: Cs2LightingDecisionContext,
@@ -1184,8 +1228,9 @@ function bombPlantedDecision(
   const nowMs = context.nowMs ?? Date.now();
   const plantedAt = context.bombPlantedAt ?? nowMs;
   const elapsed = Math.max(0, Math.min(c4FuseMs, nowMs - plantedAt));
+  const remaining = Math.max(0, c4FuseMs - elapsed);
   const urgency = elapsed / c4FuseMs;
-  const periodMs = 900 - (urgency * 720);
+  const periodMs = c4BlinkIntervalMs(remaining);
   const phase = (elapsed % periodMs) / periodMs;
   const lit = phase < 0.24;
   const baseIntensity = lit ? 1 : 0.18 + (urgency * 0.22);

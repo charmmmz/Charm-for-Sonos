@@ -18,6 +18,7 @@ struct HueAmbienceRelayConfig: Encodable, Sendable {
     let schemaVersion: Int
     let enabled: Bool
     let cs2LightingEnabled: Bool
+    let cs2EntertainmentAreaId: String?
     let bridge: HueBridgeInfo
     let applicationKey: String
     let streamingClientKey: String?
@@ -51,6 +52,7 @@ struct HueAmbienceRelayConfig: Encodable, Sendable {
         self.schemaVersion = 1
         self.enabled = store.isEnabled
         self.cs2LightingEnabled = store.isCS2SyncEnabled
+        self.cs2EntertainmentAreaId = store.cs2EntertainmentAreaID
         self.bridge = bridge
         self.applicationKey = applicationKey
         self.streamingClientKey = credentialStore.streamingClientKey(forBridgeID: bridge.id)
@@ -139,6 +141,7 @@ extension RelayClient {
             let configured: Bool
             let enabled: Bool?
             let cs2LightingEnabled: Bool?
+            let cs2EntertainmentAreaId: String?
             let bridge: Bridge?
             let mappings: Int?
             let lights: Int?
@@ -156,6 +159,7 @@ extension RelayClient {
                 case configured
                 case enabled
                 case cs2LightingEnabled
+                case cs2EntertainmentAreaId
                 case bridge
                 case mappings
                 case lights
@@ -175,6 +179,7 @@ extension RelayClient {
                 configured = try container.decode(Bool.self, forKey: .configured)
                 enabled = try container.decodeIfPresent(Bool.self, forKey: .enabled)
                 cs2LightingEnabled = try container.decodeIfPresent(Bool.self, forKey: .cs2LightingEnabled)
+                cs2EntertainmentAreaId = try container.decodeIfPresent(String.self, forKey: .cs2EntertainmentAreaId)
                 bridge = try container.decodeIfPresent(Bridge.self, forKey: .bridge)
                 mappings = try container.decodeIfPresent(Int.self, forKey: .mappings)
                 lights = try container.decodeIfPresent(Int.self, forKey: .lights)

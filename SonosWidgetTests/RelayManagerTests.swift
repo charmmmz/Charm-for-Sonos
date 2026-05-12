@@ -50,7 +50,9 @@ final class RelayManagerTests: XCTestCase {
             "active": false,
             "mode": "competitive",
             "transport": "clipFallback",
-            "fallbackReason": "entertainment_occupied"
+            "fallbackReason": "entertainment_occupied",
+            "areaId": "ent-game",
+            "areaName": "PC"
           }
         }
         """.utf8)
@@ -65,6 +67,8 @@ final class RelayManagerTests: XCTestCase {
         XCTAssertEqual(response.cs2Lighting?.mode, .competitive)
         XCTAssertEqual(response.cs2Lighting?.transport, .clipFallback)
         XCTAssertEqual(response.cs2Lighting?.fallbackReason, "entertainment_occupied")
+        XCTAssertEqual(response.cs2Lighting?.areaId, "ent-game")
+        XCTAssertEqual(response.cs2Lighting?.areaName, "PC")
     }
 
     func testHueAmbienceStatusResponseDecodesUnknownRenderModeAsNil() throws {
@@ -83,6 +87,7 @@ final class RelayManagerTests: XCTestCase {
             "lights": 2,
             "areas": 1,
             "cs2LightingEnabled": true,
+            "cs2EntertainmentAreaId": "ent-game",
             "runtimeActive": true,
             "activeGroupId": "group-1",
             "renderMode": "trueStreaming",
@@ -99,6 +104,7 @@ final class RelayManagerTests: XCTestCase {
 
         XCTAssertNil(response.status.renderMode)
         XCTAssertEqual(response.status.cs2LightingEnabled, true)
+        XCTAssertEqual(response.status.cs2EntertainmentAreaId, "ent-game")
     }
 
     func testDisabledHueAmbienceConfigStillReportsSynced() {

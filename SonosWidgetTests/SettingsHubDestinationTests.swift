@@ -6,26 +6,26 @@ final class SettingsHubDestinationTests: XCTestCase {
         XCTAssertEqual(SettingsHubDestination.primary, [
             .sonos,
             .hueAmbience,
-            .localServer,
+            .hubSetup,
         ])
     }
 
     func testPrimaryDestinationsDescribeConsolidatedGroups() {
         XCTAssertEqual(
             SettingsHubDestination.primary.map(\.title),
-            ["Sonos", "Hue Ambience", "Local Server"]
+            ["Sonos", "Hue Ambience", "Hub Setup"]
         )
         XCTAssertEqual(
             SettingsHubDestination.primary.map(\.subtitle),
             [
                 "Account, speakers, and music services",
-                "Hue Bridge, sync status, music, and game lighting",
-                "Relay, Live Activity, and NAS Agent",
+                "Music and game lighting",
+                "Hue Bridge, NAS Relay, and NAS Agent",
             ]
         )
         XCTAssertEqual(
             SettingsHubDestination.primary.map(\.systemImage),
-            ["hifispeaker.2.fill", "sparkles", "server.rack"]
+            ["hifispeaker.2.fill", "sparkles", "externaldrive.connected.to.line.below"]
         )
     }
 }

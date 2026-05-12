@@ -531,6 +531,18 @@ struct SettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(3)
+
+                if !cs2EntertainmentAreas.isEmpty {
+                    Picker("CS2 Area", selection: cs2AreaSelectionBinding) {
+                        Text("Not Set").tag("")
+                        ForEach(cs2EntertainmentAreas) { area in
+                            Text(area.name).tag(area.id)
+                        }
+                    }
+                    Text("CS2 uses this Hue Entertainment Area for low-latency streaming.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             } else {
                 Label("No Hue Bridge paired", systemImage: "lightbulb.slash")
                     .foregroundStyle(.secondary)
@@ -548,6 +560,39 @@ struct SettingsView: View {
             Text("Hue Bridge")
         } footer: {
             Text("Pair, refresh, remove, or re-pair your Hue Bridge here. The Entertainment streaming client key is generated during pairing and synced to the relay.")
+        }
+    }
+
+    private var cs2EntertainmentAreas: [HueAreaResource] {
+        hueStore.hueAreas
+            .filter { $0.kind == .entertainmentArea }
+            .sorted { lhs, rhs in
+                lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
+            }
+    }
+
+    private var cs2AreaSelectionBinding: Binding<String> {
+        Binding {
+            hueStore.cs2EntertainmentAreaID ?? ""
+        } set: { newValue in
+            hueStore.cs2EntertainmentAreaID = newValue.isEmpty ? nil : newValue
+            musicAmbience.refreshStatus()
+            syncHueConfigAfterHubChange()
+        }
+    }
+
+    private func syncHueConfigAfterHubChange() {
+        guard relay.url != nil, hueStore.bridge != nil else {
+            return
+        }
+        guard !hueStore.mappings.isEmpty || hueStore.cs2EntertainmentAreaID != nil else {
+            return
+        }
+        Task {
+            await relay.pushHueAmbienceConfig(
+                store: hueStore,
+                sonosSpeakers: displayedSpeakers
+            )
         }
     }
 

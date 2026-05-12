@@ -92,6 +92,8 @@ enum RelayClient {
             let mode: CS2LightingMode
             let transport: CS2LightingTransport
             let fallbackReason: String?
+            let areaId: String?
+            let areaName: String?
 
             private enum CodingKeys: String, CodingKey {
                 case enabled
@@ -99,6 +101,8 @@ enum RelayClient {
                 case mode
                 case transport
                 case fallbackReason
+                case areaId
+                case areaName
             }
 
             init(from decoder: Decoder) throws {
@@ -112,6 +116,8 @@ enum RelayClient {
                     .decodeIfPresent(String.self, forKey: .transport)
                     .flatMap(CS2LightingTransport.init(rawValue:)) ?? .unknown
                 fallbackReason = try container.decodeIfPresent(String.self, forKey: .fallbackReason)
+                areaId = try container.decodeIfPresent(String.self, forKey: .areaId)
+                areaName = try container.decodeIfPresent(String.self, forKey: .areaName)
             }
         }
         let ok: Bool

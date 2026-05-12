@@ -61,6 +61,7 @@ final class RelayManager {
     private(set) var cs2LightingMode: CS2LightingMode = .idle
     private(set) var cs2LightingTransport: CS2LightingTransport = .unavailable
     private(set) var cs2LightingDetail = "CS2 sync is idle."
+    private(set) var cs2LightingAreaName: String?
     var hueAmbienceSyncStatus: HueAmbienceSyncStatus = .idle
 
     @ObservationIgnored private var periodicTask: Task<Void, Never>?
@@ -269,6 +270,7 @@ final class RelayManager {
             cs2LightingMode = .idle
             cs2LightingTransport = .unavailable
             cs2LightingDetail = "CS2 sync is idle."
+            cs2LightingAreaName = nil
             return
         }
 
@@ -276,12 +278,14 @@ final class RelayManager {
         isCS2LightingActive = health.active == true
         cs2LightingMode = health.mode
         cs2LightingTransport = health.transport
+        cs2LightingAreaName = health.areaName
+        let areaSuffix = health.areaName.map { " on \($0)" } ?? ""
         if let fallback = health.fallbackReason, !fallback.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             cs2LightingDetail = "Paused: \(fallback)"
         } else if isCS2LightingActive {
-            cs2LightingDetail = "CS2 lighting is active."
+            cs2LightingDetail = "CS2 lighting is active\(areaSuffix)."
         } else if isCS2LightingEnabled {
-            cs2LightingDetail = "Waiting for CS2 game state."
+            cs2LightingDetail = "Waiting for CS2 game state\(areaSuffix)."
         } else {
             cs2LightingDetail = "CS2 sync is disabled."
         }
@@ -292,6 +296,7 @@ final class RelayManager {
         isCS2LightingActive = false
         cs2LightingMode = .idle
         cs2LightingTransport = .unavailable
+        cs2LightingAreaName = nil
         cs2LightingDetail = enabled
             ? "Waiting for CS2 game state."
             : "CS2 sync is disabled."

@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 
-import { Cs2LightingService, buildCs2LightingDecision } from './cs2Lighting.js';
+import { Cs2LightingService, buildCs2LightingDecision, c4BlinkIntervalMs } from './cs2Lighting.js';
 import { HueAmbienceConfigStore } from './hueConfigStore.js';
 import type { HueAmbienceFrame } from './hueAmbienceFrames.js';
 import type { HueAmbienceRenderer } from './hueFrameRenderer.js';
@@ -137,6 +137,24 @@ test('CS2 planted bomb remains the background priority over low health', () => {
   assert.equal(decision?.reason, 'bombPlanted');
 });
 
+test('CS2 planted bomb cadence follows the classic 40 second C4 beep curve', () => {
+  assert.equal(c4BlinkIntervalMs(40_000), 1_000);
+  assert.equal(c4BlinkIntervalMs(30_000), 775);
+  assert.equal(c4BlinkIntervalMs(20_000), 550);
+  assert.equal(c4BlinkIntervalMs(10_000), 325);
+  assert.equal(c4BlinkIntervalMs(5_000), 212.5);
+  assert.equal(c4BlinkIntervalMs(2_000), 150);
+
+  const plantedAt = new Date('2026-05-12T09:30:00.000Z').getTime();
+  const decision = buildCs2LightingDecision(snapshot({
+    receivedAt: new Date(plantedAt + 35_000),
+    round: { bomb: 'planted' },
+  }), undefined, { bombPlantedAt: plantedAt, nowMs: plantedAt + 35_000 });
+
+  assert.equal(decision?.reason, 'bombPlanted');
+  assert(Math.abs((decision?.transitionSeconds ?? 0) - 0.04675) < 0.0001);
+});
+
 test('CS2 round freeze is a dim team background state', () => {
   const decision = buildCs2LightingDecision(snapshot({
     round: { phase: 'freezetime' },
@@ -189,6 +207,61 @@ test('CS2 lighting service renders enabled game state to mapped entertainment ar
       mode: 'competitive',
       transport: 'entertainmentStreaming',
       fallbackReason: null,
+      areaId: 'ent-1',
+      areaName: 'PC Area',
+    });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('CS2 lighting service renders to configured CS2 entertainment area before music mappings', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'cs2-lighting-'));
+  try {
+    const store = new HueAmbienceConfigStore(dir);
+    await store.save({
+      ...config,
+      cs2EntertainmentAreaId: 'ent-game',
+      resources: {
+        lights: [
+          config.resources.lights[0]!,
+          {
+            id: 'light-game',
+            name: 'Game Strip',
+            supportsColor: true,
+            supportsGradient: true,
+            supportsEntertainment: true,
+            function: 'decorative',
+            functionMetadataResolved: true,
+          },
+        ],
+        areas: [
+          config.resources.areas[0]!,
+          {
+            id: 'ent-game',
+            name: 'PC',
+            kind: 'entertainmentArea',
+            childLightIDs: ['light-game'],
+            entertainmentChannels: [{ id: '0', lightID: 'light-game', serviceID: 'svc-game' }],
+          },
+        ],
+      },
+    });
+    const renderer = new RecordingHueAmbienceRenderer();
+    const service = new Cs2LightingService(store, () => renderer);
+
+    await service.receive(snapshot());
+
+    assert.equal(renderer.renderedFrames.length, 1);
+    assert.equal(renderer.renderedFrames[0]?.targets[0]?.area.id, 'ent-game');
+    assert.deepEqual(service.status(), {
+      enabled: true,
+      active: true,
+      mode: 'competitive',
+      transport: 'entertainmentStreaming',
+      fallbackReason: null,
+      areaId: 'ent-game',
+      areaName: 'PC',
     });
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -214,6 +287,8 @@ test('CS2 lighting service reports Entertainment Streaming transport when render
       mode: 'competitive',
       transport: 'entertainmentStreaming',
       fallbackReason: null,
+      areaId: 'ent-1',
+      areaName: 'PC Area',
     });
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -239,6 +314,8 @@ test('CS2 lighting service rejects CLIP fallback render results', async () => {
       mode: 'idle',
       transport: 'unavailable',
       fallbackReason: 'render_error:CS2 lighting requires Hue Entertainment streaming',
+      areaId: 'ent-1',
+      areaName: 'PC Area',
     });
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -298,6 +375,8 @@ test('CS2 lighting service reports fallback when no entertainment area is mapped
       mode: 'idle',
       transport: 'unavailable',
       fallbackReason: 'no_entertainment_area',
+      areaId: null,
+      areaName: null,
     });
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -820,7 +899,7 @@ test('CS2 planted bomb preset runs near Hue Entertainment update cadence', async
 
     await new Promise(resolve => setTimeout(resolve, 170));
 
-    assert(renderer.renderedFrames.length >= 5);
+    assert(renderer.renderedFrames.length >= 8);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -844,7 +923,7 @@ test('CS2 planted bomb preset does not exceed stable Hue Entertainment cadence',
 
     await new Promise(resolve => setTimeout(resolve, 170));
 
-    assert(renderer.renderedFrames.length <= 6);
+    assert(renderer.renderedFrames.length <= 14);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

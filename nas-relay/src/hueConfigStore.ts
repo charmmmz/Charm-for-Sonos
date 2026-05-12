@@ -72,6 +72,7 @@ export class HueAmbienceConfigStore {
       motionStyle: this.currentConfig.motionStyle,
       stopBehavior: this.currentConfig.stopBehavior,
       cs2LightingEnabled: this.currentConfig.cs2LightingEnabled,
+      cs2EntertainmentAreaId: this.currentConfig.cs2EntertainmentAreaId ?? null,
       renderMode: null,
       activeTargetIds: [],
       entertainmentTargetActive: false,
@@ -87,6 +88,11 @@ function normalizeConfig(config: HueAmbienceRuntimeConfig): HueAmbienceRuntimeCo
   const areas = recordArray<HueAreaResource>(config.resources?.areas);
   const validLightIDs = new Set(lights.map(light => light.id));
   const validAreaTargets = new Set(areas.map(area => `${area.kind}:${area.id}`));
+  const validEntertainmentAreaIDs = new Set(
+    areas
+      .filter(area => area.kind === 'entertainmentArea')
+      .map(area => area.id),
+  );
   const isValidTarget = (target?: HueAmbienceTarget | null): target is HueAmbienceTarget => {
     if (!target) return false;
     if (target.kind === 'light') return validLightIDs.has(target.id);
@@ -146,6 +152,10 @@ function normalizeConfig(config: HueAmbienceRuntimeConfig): HueAmbienceRuntimeCo
     },
     mappings,
     cs2LightingEnabled: config.cs2LightingEnabled === true,
+    cs2EntertainmentAreaId: typeof config.cs2EntertainmentAreaId === 'string'
+      && validEntertainmentAreaIDs.has(config.cs2EntertainmentAreaId)
+      ? config.cs2EntertainmentAreaId
+      : null,
     streamingClientKey: typeof config.streamingClientKey === 'string' && config.streamingClientKey.length > 0
       ? config.streamingClientKey
       : undefined,
