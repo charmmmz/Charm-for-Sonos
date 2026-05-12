@@ -467,6 +467,33 @@ test('CS2 flash overlay restores to planted bomb background', async () => {
   }
 });
 
+test('CS2 planted bomb preset keeps animating without new game state posts', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'cs2-lighting-'));
+  try {
+    const store = new HueAmbienceConfigStore(dir);
+    await store.save(config);
+    const renderer = new RecordingHueAmbienceRenderer();
+    const service = new Cs2LightingService(store, () => renderer, {
+      minRenderIntervalMs: 0,
+      activeTimeoutMs: 2_000,
+    });
+
+    await service.receive(snapshot({
+      round: { bomb: 'planted' },
+      player: { team: 'CT', state: { health: 100, burning: 0, flashed: 0 } },
+    }));
+    const first = renderer.renderedFrames[0]?.targets[0]?.lights[0]?.colors[0];
+
+    await new Promise(resolve => setTimeout(resolve, 320));
+    const last = renderer.renderedFrames.at(-1)?.targets[0]?.lights[0]?.colors[0];
+
+    assert(renderer.renderedFrames.length >= 3);
+    assert.notDeepEqual(last, first);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test('CS2 planted bomb effect changes blink frame as the detonation window advances', () => {
   const plantedAt = new Date('2026-05-12T09:30:00.000Z');
   const first = buildCs2LightingDecision(snapshot({

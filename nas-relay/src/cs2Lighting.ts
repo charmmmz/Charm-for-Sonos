@@ -102,6 +102,12 @@ interface HeldCs2Effect {
   startedAtMs: number;
 }
 
+interface Cs2PresetKeyframe {
+  atMs: number;
+  palette: HueRGBColor[];
+  ease?: 'linear' | 'smooth' | 'out';
+}
+
 export class Cs2LightingService {
   private previousByProvider = new Map<string, Cs2GameStateSnapshot>();
   private activeFrame: HueAmbienceFrame | null = null;
@@ -184,8 +190,9 @@ export class Cs2LightingService {
 
     try {
       await this.renderDecisionFrame(config, targets, decision, new Date(now), true);
-      if (this.activeTransport === 'entertainmentStreaming' && this.heldEffects.has(snapshot.providerSteamId)) {
-        this.scheduleHeldEffectAnimation(snapshot.providerSteamId, config, targets);
+      if (this.activeTransport === 'entertainmentStreaming'
+        && this.shouldAnimateProvider(snapshot.providerSteamId, decision)) {
+        this.schedulePresetAnimation(snapshot.providerSteamId, config, targets);
       }
     } catch (err) {
       this.clearActive(true);
@@ -275,6 +282,7 @@ export class Cs2LightingService {
     decision: Cs2LightingDecision,
     now: Date,
     runBeforeRender: boolean,
+    refreshActiveDeadline = true,
   ): Promise<void> {
     const frame = buildCs2Frame(targets, decision, now);
     if (runBeforeRender) {
@@ -290,11 +298,13 @@ export class Cs2LightingService {
     this.activeMode = decision.mode;
     this.activeTransport = result.transport;
     this.fallbackReason = null;
-    this.lastRenderedAt = frame.createdAt;
-    this.scheduleInactiveStop();
+    if (refreshActiveDeadline) {
+      this.lastRenderedAt = frame.createdAt;
+      this.scheduleInactiveStop();
+    }
   }
 
-  private scheduleHeldEffectAnimation(
+  private schedulePresetAnimation(
     providerSteamId: string,
     config: HueAmbienceRuntimeConfig,
     targets: HueResolvedAmbienceTarget[],
@@ -304,38 +314,69 @@ export class Cs2LightingService {
 
     this.animationTimer = setTimeout(() => {
       this.animationTimer = null;
-      void this.renderHeldEffectAnimation();
+      void this.renderPresetAnimation();
     }, animationFrameIntervalMs);
   }
 
-  private async renderHeldEffectAnimation(): Promise<void> {
+  private async renderPresetAnimation(): Promise<void> {
     if (this.animationInFlight) return;
     const context = this.animationContext;
     if (!context) return;
 
+    const snapshot = this.previousByProvider.get(context.providerSteamId);
+    if (!snapshot) {
+      this.animationContext = null;
+      return;
+    }
+
+    const nowMs = this.options.now?.() ?? Date.now();
+    if (nowMs - this.lastRenderAttemptAt > (this.options.activeTimeoutMs ?? defaultActiveTimeoutMs)) {
+      this.clearActive(true);
+      return;
+    }
+
+    const decisionContext: Cs2LightingDecisionContext = {
+      bombPlantedAt: this.bombPlantedAtByProvider.get(context.providerSteamId),
+      nowMs,
+    };
+    const background = backgroundDecisionForSnapshot(snapshot, decisionContext);
     const held = this.heldEffects.get(context.providerSteamId);
-    if (!held) {
+    if (!held && !isAnimatedBackgroundDecision(background)) {
       this.animationContext = null;
       return;
     }
 
     this.animationInFlight = true;
     try {
-      const now = new Date();
-      const animated = heldEffectDecision(held, held.baseDecision, now.getTime());
-      if (animated.complete) {
-        this.heldEffects.delete(context.providerSteamId);
+      const now = new Date(nowMs);
+      let decision = background;
+      let overlayComplete = false;
+      if (held) {
+        const animated = heldEffectDecision(held, background ?? held.baseDecision, nowMs);
+        decision = animated.decision;
+        overlayComplete = animated.complete;
+        if (animated.complete) {
+          this.heldEffects.delete(context.providerSteamId);
+        }
       }
 
-      this.lastRenderSignature = `animation|${context.providerSteamId}|${animated.decision.reason}|${animated.decision.dynamicKey ?? ''}`;
-      await this.renderDecisionFrame(context.config, context.targets, animated.decision, now, false);
+      if (!decision) {
+        this.animationContext = null;
+        return;
+      }
 
-      if (animated.complete || !this.heldEffects.has(context.providerSteamId)) {
+      this.lastRenderSignature = `animation|${context.providerSteamId}|${decision.reason}|${decision.dynamicKey ?? ''}`;
+      await this.renderDecisionFrame(context.config, context.targets, decision, now, false, false);
+
+      const shouldContinue = this.heldEffects.has(context.providerSteamId)
+        || isAnimatedBackgroundDecision(background)
+        || (held !== undefined && !overlayComplete);
+      if (!shouldContinue) {
         this.animationContext = null;
       } else {
         this.animationTimer = setTimeout(() => {
           this.animationTimer = null;
-          void this.renderHeldEffectAnimation();
+          void this.renderPresetAnimation();
         }, animationFrameIntervalMs);
       }
     } finally {
@@ -349,6 +390,10 @@ export class Cs2LightingService {
       this.animationTimer = null;
     }
     this.animationContext = null;
+  }
+
+  private shouldAnimateProvider(providerSteamId: string, decision: Cs2LightingDecision): boolean {
+    return this.heldEffects.has(providerSteamId) || isAnimatedBackgroundDecision(decision);
   }
 
   private updateBombClock(
@@ -746,7 +791,19 @@ function ambientDecision(snapshot: Cs2GameStateSnapshot): Cs2LightingDecision {
 }
 
 function firstFrameLeadMs(decision: Cs2LightingDecision): number {
-  return Math.min(Math.max(decision.attackSeconds * 1000 * 0.35, 20), 45);
+  switch (decision.reason) {
+    case 'flash':
+      return 45;
+    case 'kill':
+      return 25;
+    case 'damage':
+    case 'burning':
+      return 30;
+    case 'death':
+      return 45;
+    default:
+      return Math.min(Math.max(decision.attackSeconds * 1000 * 0.35, 20), 45);
+  }
 }
 
 function heldEffectComplete(held: HeldCs2Effect, now: number): boolean {
@@ -758,52 +815,141 @@ function heldEffectDecision(
   fallbackDecision: Cs2LightingDecision,
   now: number,
 ): { decision: Cs2LightingDecision; complete: boolean } {
-  const attackMs = held.decision.attackSeconds * 1000;
-  const holdMs = held.decision.holdSeconds * 1000;
-  const fadeMs = held.decision.fadeSeconds * 1000;
   const elapsed = Math.max(0, now - held.startedAtMs);
-
-  if (elapsed <= attackMs) {
-    const progress = attackMs > 0 ? smoothstep(elapsed / attackMs) : 1;
-    return {
-      complete: false,
-      decision: {
-        ...held.decision,
-        palette: blendPalettes(held.baseDecision.palette, held.decision.palette, progress),
-        dynamicKey: `${held.decision.reason}:attack:${Math.floor(progress * 10)}`,
-      },
-    };
+  const preset = overlayPresetKeyframes(held.decision, held.baseDecision, fallbackDecision);
+  const last = preset.at(-1);
+  if (!last || elapsed > last.atMs) {
+    return { complete: true, decision: fallbackDecision };
   }
 
-  if (elapsed <= attackMs + holdMs) {
-    return {
-      complete: false,
-      decision: {
-        ...held.decision,
-        dynamicKey: `${held.decision.reason}:hold`,
-      },
-    };
-  }
-
-  if (elapsed <= attackMs + holdMs + fadeMs) {
-    const progress = fadeMs > 0 ? smoothstep((elapsed - attackMs - holdMs) / fadeMs) : 1;
-    return {
-      complete: false,
-      decision: {
-        ...fallbackDecision,
-        reason: held.decision.reason,
-        palette: blendPalettes(held.decision.palette, fallbackDecision.palette, progress),
-        transitionSeconds: Math.max(fallbackDecision.transitionSeconds, 0.12),
-        dynamicKey: `${held.decision.reason}:release:${Math.floor(progress * 10)}`,
-      },
-    };
-  }
-
-  return { complete: true, decision: fallbackDecision };
+  const sampled = samplePresetKeyframes(preset, elapsed);
+  return {
+    complete: false,
+    decision: {
+      ...fallbackDecision,
+      mode: held.decision.mode,
+      reason: held.decision.reason,
+      palette: sampled.palette,
+      transitionSeconds: held.decision.transitionSeconds,
+      attackSeconds: held.decision.attackSeconds,
+      holdSeconds: held.decision.holdSeconds,
+      fadeSeconds: held.decision.fadeSeconds,
+      dynamicKey: `${held.decision.reason}:preset:${sampled.segment}:${Math.floor(sampled.progress * 10)}`,
+    },
+  };
 }
 
 function heldEffectTotalMs(decision: Cs2LightingDecision): number {
-  return (decision.attackSeconds + decision.holdSeconds + decision.fadeSeconds) * 1000;
+  return overlayPresetDurationMs(decision);
+}
+
+function overlayPresetDurationMs(decision: Cs2LightingDecision): number {
+  switch (decision.reason) {
+    case 'flash':
+      return 900;
+    case 'kill':
+      return 220;
+    case 'damage':
+      return 620;
+    case 'burning':
+      return 820;
+    case 'death':
+      return 760;
+    default:
+      return (decision.attackSeconds + decision.holdSeconds + decision.fadeSeconds) * 1000;
+  }
+}
+
+function overlayPresetKeyframes(
+  effect: Cs2LightingDecision,
+  start: Cs2LightingDecision,
+  fallback: Cs2LightingDecision,
+): Cs2PresetKeyframe[] {
+  switch (effect.reason) {
+    case 'flash':
+      return [
+        { atMs: 0, palette: start.palette, ease: 'smooth' },
+        { atMs: 90, palette: palettes.flash, ease: 'out' },
+        { atMs: 220, palette: palettes.flash, ease: 'linear' },
+        { atMs: 900, palette: fallback.palette, ease: 'out' },
+      ];
+    case 'kill':
+      return [
+        { atMs: 0, palette: start.palette, ease: 'smooth' },
+        { atMs: 35, palette: [{ r: 1, g: 0.86, b: 0.22 }, ...palettes.kill], ease: 'out' },
+        { atMs: 95, palette: palettes.kill, ease: 'smooth' },
+        { atMs: 220, palette: fallback.palette, ease: 'out' },
+      ];
+    case 'damage':
+      return [
+        { atMs: 0, palette: start.palette, ease: 'smooth' },
+        { atMs: 70, palette: palettes.damage, ease: 'out' },
+        { atMs: 180, palette: dim(palettes.damage, 0.45), ease: 'smooth' },
+        { atMs: 620, palette: fallback.palette, ease: 'out' },
+      ];
+    case 'burning':
+      return [
+        { atMs: 0, palette: start.palette, ease: 'smooth' },
+        { atMs: 60, palette: palettes.burning, ease: 'out' },
+        { atMs: 180, palette: dim(palettes.burning, 0.7), ease: 'linear' },
+        { atMs: 320, palette: palettes.burning.slice().reverse(), ease: 'smooth' },
+        { atMs: 520, palette: dim(palettes.burning, 0.45), ease: 'linear' },
+        { atMs: 820, palette: fallback.palette, ease: 'out' },
+      ];
+    case 'death':
+      return [
+        { atMs: 0, palette: start.palette, ease: 'smooth' },
+        { atMs: 120, palette: dim(palettes.damage, 0.36), ease: 'out' },
+        { atMs: 300, palette: dim(palettes.damage, 0.12), ease: 'smooth' },
+        { atMs: 760, palette: fallback.palette, ease: 'out' },
+      ];
+    default:
+      return [
+        { atMs: 0, palette: start.palette, ease: 'smooth' },
+        { atMs: overlayPresetDurationMs(effect), palette: fallback.palette, ease: 'out' },
+      ];
+  }
+}
+
+function samplePresetKeyframes(
+  keyframes: Cs2PresetKeyframe[],
+  elapsedMs: number,
+): { palette: HueRGBColor[]; segment: number; progress: number } {
+  const first = keyframes[0];
+  if (!first || elapsedMs <= first.atMs) {
+    return { palette: first?.palette ?? [], segment: 0, progress: 0 };
+  }
+
+  for (let index = 1; index < keyframes.length; index += 1) {
+    const previous = keyframes[index - 1]!;
+    const next = keyframes[index]!;
+    if (elapsedMs > next.atMs) continue;
+
+    const span = Math.max(1, next.atMs - previous.atMs);
+    const rawProgress = clamp01((elapsedMs - previous.atMs) / span);
+    return {
+      palette: blendPalettes(previous.palette, next.palette, easeProgress(rawProgress, next.ease)),
+      segment: index,
+      progress: rawProgress,
+    };
+  }
+
+  const last = keyframes[keyframes.length - 1]!;
+  return { palette: last.palette, segment: keyframes.length - 1, progress: 1 };
+}
+
+function easeProgress(progress: number, ease: Cs2PresetKeyframe['ease'] = 'smooth'): number {
+  switch (ease) {
+    case 'linear':
+      return clamp01(progress);
+    case 'out': {
+      const t = clamp01(progress);
+      return 1 - ((1 - t) * (1 - t));
+    }
+    case 'smooth':
+    default:
+      return smoothstep(progress);
+  }
 }
 
 function isDeathEvent(snapshot: Cs2GameStateSnapshot, previous?: Cs2GameStateSnapshot): boolean {
@@ -821,6 +967,10 @@ function isPriorityDecision(decision: Cs2LightingDecision): boolean {
 
 function isHeldEventDecision(decision: Cs2LightingDecision): boolean {
   return decision.attackSeconds > 0 || decision.holdSeconds > 0 || decision.fadeSeconds > 0;
+}
+
+function isAnimatedBackgroundDecision(decision: Cs2LightingDecision | null): boolean {
+  return decision?.reason === 'bombPlanted';
 }
 
 function blendPalettes(from: HueRGBColor[], to: HueRGBColor[], progress: number): HueRGBColor[] {
