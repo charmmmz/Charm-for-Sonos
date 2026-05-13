@@ -50,11 +50,19 @@ class HueEdkSidecarRenderer implements HueAmbienceRenderer {
       if (!this.markEffectForPlayback(effect.effectKey, frame.createdAt)) {
         return { transport: 'entertainmentStreaming', nativeEffectActive: true };
       }
-      await this.post('/effect/flash', {
-        intensity: frameIntensity(frame),
+      await this.post('/effect/sphere', {
+        kind: 'flash',
+        r: 1,
+        g: 1,
+        b: 1,
+        intensity: Math.max(frameIntensity(frame), 0.94),
         attackMs: secondsToMs(effect.attackSeconds, 90),
         holdMs: secondsToMs(effect.holdSeconds, 90),
         fadeMs: secondsToMs(effect.fadeSeconds, 700),
+        x: 0,
+        y: 0,
+        z: 1,
+        radius: 3.1,
       });
       return { transport: 'entertainmentStreaming', nativeEffectActive: true };
     }
@@ -280,7 +288,7 @@ function teamForEffect(reason: string | undefined): 'CT' | 'T' | 'observer' | 'n
 }
 
 function isPulseEffect(reason: string | undefined): boolean {
-  return reason === 'damage' || reason === 'death';
+  return reason === 'damage';
 }
 
 function nativePulseColor(reason: string, frame: HueAmbienceFrame): HueRGBColor {
@@ -310,7 +318,7 @@ function nativeKillProfile(strength: number | undefined): {
   const tier = Math.min(3, Math.max(1, Math.round(strength ?? 1)));
   if (tier >= 3) {
     return {
-      color: { r: 1, g: 0.92, b: 0.55 },
+      color: { r: 1, g: 1, b: 1 },
       intensity: 1,
       durationMs: 210,
       radius: 2.5,
@@ -318,14 +326,14 @@ function nativeKillProfile(strength: number | undefined): {
   }
   if (tier === 2) {
     return {
-      color: { r: 1, g: 0.82, b: 0.24 },
+      color: { r: 1, g: 1, b: 1 },
       intensity: 0.95,
       durationMs: 190,
       radius: 2.1,
     };
   }
   return {
-    color: { r: 1, g: 0.68, b: 0.1 },
+    color: { r: 1, g: 1, b: 1 },
     intensity: 0.86,
     durationMs: 170,
     radius: 1.7,

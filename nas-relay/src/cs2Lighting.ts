@@ -181,7 +181,8 @@ export class Cs2LightingService {
 
   async receive(snapshot: Cs2GameStateSnapshot): Promise<void> {
     const previous = this.previousByProvider.get(snapshot.providerSteamId);
-    this.previousByProvider.set(snapshot.providerSteamId, snapshot);
+    const effectiveSnapshot = snapshotWithFallbackTeam(snapshot, previous);
+    this.previousByProvider.set(snapshot.providerSteamId, effectiveSnapshot);
     const now = this.options.now?.() ?? Date.now();
 
     const config = this.store.current;
@@ -199,26 +200,26 @@ export class Cs2LightingService {
     }
 
     this.lastGameStateAt = new Date(now);
-    this.activeProviderSteamId = snapshot.providerSteamId;
+    this.activeProviderSteamId = effectiveSnapshot.providerSteamId;
     this.scheduleInactiveStop();
-    this.updateBombClock(snapshot, previous, now);
+    this.updateBombClock(effectiveSnapshot, previous, now);
     const decisionContext: Cs2LightingDecisionContext = {
-      bombPlantedAt: this.bombPlantedAtByProvider.get(snapshot.providerSteamId),
+      bombPlantedAt: this.bombPlantedAtByProvider.get(effectiveSnapshot.providerSteamId),
       nowMs: now,
     };
-    const overlayDecision = momentaryDecisionForSnapshot(snapshot, previous);
-    const backgroundDecision = backgroundDecisionForSnapshot(snapshot, decisionContext);
+    const overlayDecision = momentaryDecisionForSnapshot(effectiveSnapshot, previous);
+    const backgroundDecision = backgroundDecisionForSnapshot(effectiveSnapshot, decisionContext);
     const baseDecision = overlayDecision ?? backgroundDecision;
     if (!baseDecision) {
-      this.heldEffects.delete(snapshot.providerSteamId);
+      this.heldEffects.delete(effectiveSnapshot.providerSteamId);
       this.fallbackReason = null;
-      await this.logLightingCleared(snapshot, 'no_active_decision');
+      await this.logLightingCleared(effectiveSnapshot, 'no_active_decision');
       return;
     }
 
-    const heldDecision = this.decisionWithHeldEffect(snapshot.providerSteamId, baseDecision, snapshot, decisionContext, now);
-    const decision = this.decisionWithBackgroundTransition(snapshot.providerSteamId, heldDecision, now);
-    const signature = frameSignature(decision, snapshot);
+    const heldDecision = this.decisionWithHeldEffect(effectiveSnapshot.providerSteamId, baseDecision, effectiveSnapshot, decisionContext, now);
+    const decision = this.decisionWithBackgroundTransition(effectiveSnapshot.providerSteamId, heldDecision, now);
+    const signature = frameSignature(decision, effectiveSnapshot);
     if (signature === this.lastRenderSignature) {
       if (this.activeFrame) {
         this.lastRenderedAt = new Date(now);
@@ -234,18 +235,18 @@ export class Cs2LightingService {
     this.lastRenderSignature = signature;
 
     try {
-      const result = await this.renderDecisionFrame(config, targets, decision, new Date(now), true, true, snapshot.providerSteamId);
-      this.activeProviderSteamId = snapshot.providerSteamId;
-      await this.logLightingDecision(snapshot, backgroundDecision, overlayDecision, decision);
+      const result = await this.renderDecisionFrame(config, targets, decision, new Date(now), true, true, effectiveSnapshot.providerSteamId);
+      this.activeProviderSteamId = effectiveSnapshot.providerSteamId;
+      await this.logLightingDecision(effectiveSnapshot, backgroundDecision, overlayDecision, decision);
       if (this.activeTransport === 'entertainmentStreaming'
         && result.nativeEffectActive !== true
-        && this.shouldAnimateProvider(snapshot.providerSteamId, decision)) {
-        this.schedulePresetAnimation(snapshot.providerSteamId, config, targets);
+        && this.shouldAnimateProvider(effectiveSnapshot.providerSteamId, decision)) {
+        this.schedulePresetAnimation(effectiveSnapshot.providerSteamId, config, targets);
       }
     } catch (err) {
       this.clearActive(true);
       this.fallbackReason = `render_error:${errorMessageWithCauses(err)}`;
-      await this.logLightingRenderError(snapshot, backgroundDecision, overlayDecision, decision, this.fallbackReason);
+      await this.logLightingRenderError(effectiveSnapshot, backgroundDecision, overlayDecision, decision, this.fallbackReason);
     }
   }
 
@@ -884,10 +885,11 @@ export function buildCs2LightingDecision(
   previous?: Cs2GameStateSnapshot,
   context: Cs2LightingDecisionContext = {},
 ): Cs2LightingDecision | null {
-  const overlay = momentaryDecisionForSnapshot(snapshot, previous);
+  const effectiveSnapshot = snapshotWithFallbackTeam(snapshot, previous);
+  const overlay = momentaryDecisionForSnapshot(effectiveSnapshot, previous);
   if (overlay) return overlay;
 
-  return backgroundDecisionForSnapshot(snapshot, context);
+  return backgroundDecisionForSnapshot(effectiveSnapshot, context);
 }
 
 function momentaryDecisionForSnapshot(
@@ -920,11 +922,11 @@ function momentaryDecisionForSnapshot(
     return {
       mode,
       reason: 'death',
-      palette: dim(palettes.damage, 0.28),
-      transitionSeconds: 0.25,
-      attackSeconds: 0.12,
-      holdSeconds: 0.65,
-      fadeSeconds: 0.8,
+      palette: [{ r: 1, g: 0, b: 0 }],
+      transitionSeconds: 0.05,
+      attackSeconds: 0.06,
+      holdSeconds: 0,
+      fadeSeconds: 1.35,
     };
   }
 
@@ -1155,7 +1157,29 @@ function currentKillCount(snapshot: Cs2GameStateSnapshot): number | null {
 }
 
 function teamAmbientPalette(snapshot: Cs2GameStateSnapshot): HueRGBColor[] {
-  return snapshot.player?.team?.toUpperCase() === 'T' ? palettes.tAmbient : palettes.ctAmbient;
+  return normalizedTeam(snapshot.player?.team) === 'T' ? palettes.tAmbient : palettes.ctAmbient;
+}
+
+function snapshotWithFallbackTeam(
+  snapshot: Cs2GameStateSnapshot,
+  previous?: Cs2GameStateSnapshot,
+): Cs2GameStateSnapshot {
+  const team = normalizedTeam(snapshot.player?.team) ?? normalizedTeam(previous?.player?.team);
+  if (!team || snapshot.player?.team === team) return snapshot;
+
+  return {
+    ...snapshot,
+    player: {
+      ...(snapshot.player ?? {}),
+      team,
+    },
+  };
+}
+
+function normalizedTeam(team: string | undefined): 'CT' | 'T' | null {
+  const normalized = team?.trim().toUpperCase();
+  if (normalized === 'CT' || normalized === 'T') return normalized;
+  return null;
 }
 
 function isObserverActivity(activity: string | undefined): boolean {
@@ -1200,7 +1224,7 @@ function roundBackgroundDecision(
   intensity: number,
   transitionSeconds: number,
 ): Cs2LightingDecision {
-  const team = snapshot.player?.team?.toUpperCase() ?? 'neutral';
+  const team = normalizedTeam(snapshot.player?.team) ?? 'neutral';
   return {
     mode: gameMode(snapshot),
     reason,
@@ -1219,7 +1243,7 @@ function deathFallbackDecision(snapshot: Cs2GameStateSnapshot): Cs2LightingDecis
   return {
     mode: gameMode(snapshot),
     reason: 'ambient',
-    palette: dim(teamAmbientPalette(snapshot), 0.3),
+    palette: dim(teamAmbientPalette(snapshot), 0.26),
     transitionSeconds: 0.45,
     attackSeconds: 0,
     holdSeconds: 0,
@@ -1335,7 +1359,7 @@ function effectLayerForDecision(decision: Cs2LightingDecision): 'background' | '
 
 function sidecarCommandForDecision(
   decision: Cs2LightingDecision,
-): 'ambient/team' | 'effect/flash' | 'effect/kill' | 'effect/pulse' | 'effect/sphere' | 'effect/iterator' | 'effect/c4' | 'effect/explosion' {
+): 'ambient/team' | 'effect/kill' | 'effect/pulse' | 'effect/sphere' | 'effect/iterator' | 'effect/c4' | 'effect/explosion' {
   switch (decision.reason) {
     case 'bombExploded':
       return 'effect/explosion';
@@ -1346,10 +1370,9 @@ function sidecarCommandForDecision(
     case 'roundFreeze':
       return 'effect/iterator';
     case 'damage':
-    case 'death':
       return 'effect/pulse';
     case 'flash':
-      return 'effect/flash';
+      return 'effect/sphere';
     case 'kill':
       return 'effect/kill';
     default:
@@ -1380,7 +1403,18 @@ function errorMessageWithCauses(err: unknown): string {
 }
 
 function roundPhase(snapshot: Cs2GameStateSnapshot): string {
-  return snapshot.round?.phase?.toLowerCase() ?? '';
+  const phases = [snapshot.round?.phase, snapshot.map?.phase]
+    .map(normalizedPhase)
+    .filter(phase => phase.length > 0);
+  if (phases.includes('freezetime')) return 'freezetime';
+  if (phases.includes('over')) return 'over';
+  return phases[0] ?? '';
+}
+
+function normalizedPhase(phase: string | undefined): string {
+  const normalized = phase?.trim().toLowerCase() ?? '';
+  if (normalized === 'freeze') return 'freezetime';
+  return normalized;
 }
 
 export function c4BlinkIntervalMs(remainingMs: number): number {
@@ -1448,8 +1482,12 @@ function baseDecisionForHeldEffect(
   effect: Cs2LightingDecision,
   context: Cs2LightingDecisionContext,
 ): Cs2LightingDecision {
+  if (effect.reason === 'death') {
+    return deathFallbackDecision(snapshot);
+  }
+
   return backgroundDecisionForSnapshot(snapshot, context)
-    ?? (effect.reason === 'death' ? deathFallbackDecision(snapshot) : ambientDecision(snapshot));
+    ?? ambientDecision(snapshot);
 }
 
 function ambientDecision(snapshot: Cs2GameStateSnapshot): Cs2LightingDecision {
@@ -1491,17 +1529,18 @@ function heldEffectDecision(
   now: number,
 ): { decision: Cs2LightingDecision; complete: boolean } {
   const elapsed = Math.max(0, now - held.startedAtMs);
-  const preset = overlayPresetKeyframes(held.decision, held.baseDecision, fallbackDecision);
+  const effectiveFallback = held.decision.reason === 'death' ? held.baseDecision : fallbackDecision;
+  const preset = overlayPresetKeyframes(held.decision, held.baseDecision, effectiveFallback);
   const last = preset.at(-1);
   if (!last || elapsed > last.atMs) {
-    return { complete: true, decision: fallbackDecision };
+    return { complete: true, decision: effectiveFallback };
   }
 
   const sampled = samplePresetKeyframes(preset, elapsed);
   return {
     complete: false,
     decision: {
-      ...fallbackDecision,
+      ...effectiveFallback,
       mode: held.decision.mode,
       reason: held.decision.reason,
       palette: sampled.palette,
@@ -1531,7 +1570,7 @@ function overlayPresetDurationMs(decision: Cs2LightingDecision): number {
     case 'burning':
       return 820;
     case 'death':
-      return 760;
+      return 1450;
     default:
       return (decision.attackSeconds + decision.holdSeconds + decision.fadeSeconds) * 1000;
   }
@@ -1576,9 +1615,10 @@ function overlayPresetKeyframes(
     case 'death':
       return [
         { atMs: 0, palette: start.palette, ease: 'smooth' },
-        { atMs: 120, palette: dim(palettes.damage, 0.36), ease: 'out' },
-        { atMs: 300, palette: dim(palettes.damage, 0.12), ease: 'smooth' },
-        { atMs: 760, palette: fallback.palette, ease: 'out' },
+        { atMs: 55, palette: [{ r: 1, g: 0, b: 0 }, { r: 0.72, g: 0, b: 0 }], ease: 'out' },
+        { atMs: 760, palette: [{ r: 0, g: 0, b: 0 }], ease: 'linear' },
+        { atMs: 1030, palette: [{ r: 0, g: 0, b: 0 }], ease: 'linear' },
+        { atMs: 1450, palette: fallback.palette, ease: 'smooth' },
       ];
     default:
       return [
@@ -1592,19 +1632,23 @@ function killPaletteForStrength(strength: number | undefined): HueRGBColor[] {
   const tier = Math.min(3, Math.max(1, Math.round(strength ?? 1)));
   if (tier >= 3) {
     return [
-      { r: 1, g: 0.92, b: 0.55 },
-      { r: 1, g: 0.52, b: 0.08 },
-      { r: 0.65, g: 0.04, b: 0 },
+      { r: 1, g: 1, b: 1 },
+      { r: 0.92, g: 0.92, b: 0.92 },
+      { r: 0.7, g: 0.7, b: 0.7 },
     ];
   }
   if (tier === 2) {
     return [
-      { r: 1, g: 0.82, b: 0.24 },
-      { r: 1, g: 0.38, b: 0.04 },
-      { r: 0.58, g: 0.02, b: 0 },
+      { r: 1, g: 1, b: 1 },
+      { r: 0.86, g: 0.86, b: 0.86 },
+      { r: 0.62, g: 0.62, b: 0.62 },
     ];
   }
-  return palettes.kill;
+  return [
+    { r: 1, g: 1, b: 1 },
+    { r: 0.82, g: 0.82, b: 0.82 },
+    { r: 0.52, g: 0.52, b: 0.52 },
+  ];
 }
 
 function samplePresetKeyframes(

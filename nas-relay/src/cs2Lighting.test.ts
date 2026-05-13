@@ -80,7 +80,7 @@ test('CS2 decision keeps already-dead residual effects on dim team ambience', ()
   assert(color && maxChannel(color) < 0.2);
 });
 
-test('CS2 kill effect uses a short non-green burst', () => {
+test('CS2 kill effect uses a short white burst', () => {
   const previous = snapshot({
     player: { state: { round_kills: 0, health: 100, burning: 0, flashed: 0 } },
   });
@@ -94,7 +94,7 @@ test('CS2 kill effect uses a short non-green burst', () => {
   assert(decision.attackSeconds <= 0.08);
   assert(decision.holdSeconds <= 0.16);
   assert(decision.fadeSeconds <= 0.25);
-  assert(decision.palette.every(color => color.g <= Math.max(color.r, color.b)));
+  assert(decision.palette.every(color => color.r === color.g && color.g === color.b));
   assert.equal(decision.strength, 1);
 });
 
@@ -213,6 +213,47 @@ test('CS2 round freeze is a dim team background state', () => {
   const color = decision?.palette[0];
   assert(color && color.b > color.r);
   assert(color && maxChannel(color) < 0.3);
+});
+
+test('CS2 round freeze honors map phase and T team ambience', () => {
+  const decision = buildCs2LightingDecision(snapshot({
+    map: { phase: 'freezetime' },
+    round: { phase: 'live' },
+    player: {
+      team: 'T',
+      state: { health: 100, burning: 0, flashed: 0 },
+    },
+  }));
+
+  assert.equal(decision?.reason, 'roundFreeze');
+  assert.equal(decision?.effectKey, 'round:0:roundFreeze:T');
+  const color = decision?.palette[0];
+  assert(color && color.r > color.b);
+  assert(color && maxChannel(color) < 0.3);
+});
+
+test('CS2 round freeze reuses previous T team when current payload omits team', () => {
+  const previous = snapshot({
+    player: {
+      team: 'T',
+      state: { health: 100, burning: 0, flashed: 0 },
+    },
+  });
+  const current = snapshot({
+    map: { phase: 'freezetime' },
+    round: { phase: 'live' },
+    player: {
+      team: undefined,
+      state: { health: 100, burning: 0, flashed: 0 },
+    },
+  });
+
+  const decision = buildCs2LightingDecision(current, previous);
+
+  assert.equal(decision?.reason, 'roundFreeze');
+  assert.equal(decision?.effectKey, 'round:0:roundFreeze:T');
+  const color = decision?.palette[0];
+  assert(color && color.r > color.b);
 });
 
 test('CS2 round over ends planted bomb background', () => {
@@ -506,7 +547,7 @@ test('CS2 lighting service logs selected background and overlay decisions', asyn
     assert.equal(logger.infoRecords[0]?.data.overlayReason, 'flash');
     assert.equal(logger.infoRecords[0]?.data.finalEffectProfile, 'flash_overlay');
     assert.equal(logger.infoRecords[0]?.data.finalEffectLayer, 'overlay');
-    assert.equal(logger.infoRecords[0]?.data.finalSidecarCommand, 'effect/flash');
+    assert.equal(logger.infoRecords[0]?.data.finalSidecarCommand, 'effect/sphere');
     assert.equal(logger.infoRecords[0]?.data.animationCadenceMs, 16);
     assert.equal(logger.infoRecords[0]?.data.team, 'T');
     assert.deepEqual(logger.infoRecords[0]?.data.firstColor, renderer.renderedFrames[0]?.targets[0]?.lights[0]?.colors[0]);
@@ -539,7 +580,7 @@ test('CS2 lighting service writes diagnostic decisions to a JSONL file', async (
     assert.equal(record.overlayReason, 'flash');
     assert.equal(record.finalEffectProfile, 'flash_overlay');
     assert.equal(record.finalEffectLayer, 'overlay');
-    assert.equal(record.finalSidecarCommand, 'effect/flash');
+    assert.equal(record.finalSidecarCommand, 'effect/sphere');
     assert.equal(record.animationCadenceMs, 16);
     assert.equal(record.team, 'T');
     assert.deepEqual(record.firstColor, renderer.renderedFrames[0]?.targets[0]?.lights[0]?.colors[0]);
@@ -576,6 +617,43 @@ test('CS2 lighting service logs C4 blink cadence and sidecar command', async () 
     assert.equal(record?.finalCadenceMs, 1000);
     assert.equal(record?.finalRemainingMs, 40000);
     assert.equal(record?.animationCadenceMs, 16);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('CS2 lighting service renders map freezetime as T iterator using previous team', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'cs2-lighting-'));
+  try {
+    const store = new HueAmbienceConfigStore(dir);
+    await store.save(config);
+    const renderer = new RecordingHueAmbienceRenderer();
+    const logger = new RecordingCs2LightingLogger();
+    const service = new Cs2LightingService(store, () => renderer, {
+      logger,
+      minRenderIntervalMs: 0,
+    });
+
+    await service.receive(snapshot({
+      map: { phase: 'live' },
+      round: { phase: 'live' },
+      player: { team: 'T', state: { health: 100, burning: 0, flashed: 0 } },
+    }));
+    await service.receive(snapshot({
+      map: { phase: 'freezetime' },
+      round: { phase: 'live' },
+      player: { team: undefined, state: { health: 100, burning: 0, flashed: 0 } },
+    }));
+
+    const frame = renderer.renderedFrames.at(-1);
+    const color = frame?.targets[0]?.lights[0]?.colors[0];
+    const record = logger.infoRecords.at(-1)?.data;
+
+    assert.equal(frame?.effect?.reason, 'roundFreeze');
+    assert(color && color.r > color.b);
+    assert.equal(record?.finalReason, 'roundFreeze');
+    assert.equal(record?.finalSidecarCommand, 'effect/iterator');
+    assert.equal(record?.team, 'T');
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -762,7 +840,7 @@ test('CS2 lighting service renders kill as a short burst and restores ambient qu
     }));
     const restored = renderer.renderedFrames.at(-1)?.targets[0]?.lights[0]?.colors[0];
 
-    assert(burst && burst.r > 0.8 && burst.g > 0.2);
+    assert(burst && burst.r > 0.8 && burst.g > 0.8 && burst.b > 0.8);
     assert.deepEqual(restored, { r: 0.05, g: 0.18, b: 0.44 });
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -918,6 +996,54 @@ test('CS2 flash effect attacks from team color to white and releases back smooth
     assert.deepEqual(peak, { r: 1, g: 1, b: 1 });
     assert(release && release.r > ambient!.r && release.r < 1);
     assert.deepEqual(restored, ambient);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('CS2 death effect blooms red, fades to black, then restores dim team ambience', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'cs2-lighting-'));
+  try {
+    const store = new HueAmbienceConfigStore(dir);
+    await store.save(config);
+    const renderer = new RecordingHueAmbienceRenderer();
+    let now = new Date('2026-05-12T09:30:00.000Z').getTime();
+    const service = new Cs2LightingService(store, () => renderer, {
+      minRenderIntervalMs: 0,
+      now: () => now,
+    });
+
+    await service.receive(snapshot({
+      receivedAt: new Date(now),
+      player: { team: 'CT', state: { health: 100, burning: 0, flashed: 0 } },
+    }));
+
+    now += 10;
+    await service.receive(snapshot({
+      receivedAt: new Date(now),
+      player: { team: 'CT', state: { health: 0, burning: 0, flashed: 0 } },
+    }));
+    const redBloom = renderer.renderedFrames.at(-1)?.targets[0]?.lights[0]?.colors[0];
+
+    now += 770;
+    await service.receive(snapshot({
+      receivedAt: new Date(now),
+      player: { team: 'CT', state: { health: 0, burning: 0, flashed: 0 } },
+    }));
+    const blackout = renderer.renderedFrames.at(-1)?.targets[0]?.lights[0]?.colors[0];
+
+    now += 760;
+    await service.receive(snapshot({
+      receivedAt: new Date(now),
+      player: { team: 'CT', state: { health: 0, burning: 0, flashed: 0 } },
+    }));
+    const dimTeam = renderer.renderedFrames.at(-1)?.targets[0]?.lights[0]?.colors[0];
+
+    assert(redBloom && redBloom.r > 0.9);
+    assert(redBloom && redBloom.g < 0.08 && redBloom.b < 0.08);
+    assert(blackout && maxChannel(blackout) < 0.03);
+    assert(dimTeam && dimTeam.b > dimTeam.r);
+    assert(dimTeam && maxChannel(dimTeam) > 0.05 && maxChannel(dimTeam) < 0.2);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
