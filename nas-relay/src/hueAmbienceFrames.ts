@@ -3,6 +3,7 @@ import type {
   HueAmbienceFrameReason,
   HueAmbienceRenderMode,
   HueAreaResource,
+  HueEntertainmentChannelResource,
   HueLightResource,
   HueRGBColor,
   HueResolvedAmbienceTarget,
@@ -32,6 +33,18 @@ export interface HueAmbienceFrame {
   metadataComplete: boolean;
   phase: number;
   progressOffset: number;
+  effect?: HueAmbienceFrameEffect;
+}
+
+export interface HueAmbienceFrameEffect {
+  source: string;
+  reason: string;
+  effectKey?: string;
+  mode?: string;
+  transitionSeconds?: number;
+  attackSeconds?: number;
+  holdSeconds?: number;
+  fadeSeconds?: number;
 }
 
 export interface BuildHueAmbienceFrameInput {
@@ -42,6 +55,13 @@ export interface BuildHueAmbienceFrameInput {
   phase: number;
   transitionSeconds: number;
   now?: Date;
+  effect?: HueAmbienceFrameEffect;
+}
+
+interface LightFrameSource {
+  light: HueLightResource;
+  channelID?: string | null;
+  offsetIndex: number;
 }
 
 export function buildHueAmbienceFrame(input: BuildHueAmbienceFrameInput): HueAmbienceFrame {
@@ -52,15 +72,16 @@ export function buildHueAmbienceFrame(input: BuildHueAmbienceFrameInput): HueAmb
     : 'clipFallback';
   const targetFrames = input.targets.map((target, targetIndex) => {
     const metadataComplete = entertainmentMetadataComplete(target.area);
-    const spatialRanks = entertainmentSpatialRanks(target);
+    const frameSources = lightFrameSources(target);
     return {
       area: target.area,
-      lights: target.lights.map((light, lightIndex) =>
+      lights: frameSources.map(source =>
         buildLightFrame(
-          light,
+          source.light,
           target.area,
           palette,
-          input.phase + progressOffset + targetIndex + (spatialRanks?.get(light.id) ?? lightIndex),
+          input.phase + progressOffset + targetIndex + source.offsetIndex,
+          source.channelID,
         ),
       ),
       metadataComplete,
@@ -78,6 +99,7 @@ export function buildHueAmbienceFrame(input: BuildHueAmbienceFrameInput): HueAmb
       && entertainmentTargetFrames.every(target => target.metadataComplete),
     phase: input.phase,
     progressOffset,
+    ...(input.effect ? { effect: input.effect } : {}),
   };
 }
 
@@ -92,17 +114,42 @@ export function entertainmentMetadataComplete(area: HueAreaResource): boolean {
   return area.childLightIDs.length > 0 && area.childLightIDs.every(lightID => channelLightIDs.has(lightID));
 }
 
-function entertainmentSpatialRanks(target: HueResolvedAmbienceTarget): Map<string, number> | null {
-  if (target.area.kind !== 'entertainmentArea') return null;
+function lightFrameSources(target: HueResolvedAmbienceTarget): LightFrameSource[] {
+  if (target.area.kind !== 'entertainmentArea') {
+    return target.lights.map((light, index) => ({ light, offsetIndex: index }));
+  }
 
-  const channelsByLightID = new Map(
-    (target.area.entertainmentChannels ?? [])
-      .filter(channel => channel.lightID)
-      .map(channel => [channel.lightID!, channel]),
-  );
-  const positionedLights = target.lights.map(light => {
-    const channel = channelsByLightID.get(light.id);
-    const position = channel?.position;
+  const lightsByID = new Map(target.lights.map(light => [light.id, light]));
+  const channelSources = (target.area.entertainmentChannels ?? [])
+    .map((channel, index) => {
+      const light = channel.lightID ? lightsByID.get(channel.lightID) : undefined;
+      return light ? { light, channel, fallbackIndex: index } : null;
+    })
+    .filter((source): source is {
+      light: HueLightResource;
+      channel: HueEntertainmentChannelResource;
+      fallbackIndex: number;
+    } => source !== null);
+
+  if (channelSources.length === 0) {
+    return target.lights.map((light, index) => ({ light, offsetIndex: index }));
+  }
+
+  const spatialRanks = entertainmentChannelSpatialRanks(channelSources);
+  return channelSources.map(source => ({
+    light: source.light,
+    channelID: source.channel.id,
+    offsetIndex: spatialRanks?.get(source.channel.id) ?? source.fallbackIndex,
+  }));
+}
+
+function entertainmentChannelSpatialRanks(
+  channelSources: Array<{
+    channel: HueEntertainmentChannelResource;
+  }>,
+): Map<string, number> | null {
+  const positionedChannels = channelSources.map(source => {
+    const position = source.channel.position;
     if (
       !position
       || !Number.isFinite(position.x)
@@ -112,21 +159,21 @@ function entertainmentSpatialRanks(target: HueResolvedAmbienceTarget): Map<strin
       return null;
     }
 
-    return { lightID: light.id, position };
+    return { channelID: source.channel.id, position };
   });
 
-  if (positionedLights.some(light => light === null)) return null;
+  if (positionedChannels.some(channel => channel === null)) return null;
 
   return new Map(
-    positionedLights
-      .filter((light): light is NonNullable<typeof light> => light !== null)
+    positionedChannels
+      .filter((channel): channel is NonNullable<typeof channel> => channel !== null)
       .sort((a, b) =>
         a.position.x - b.position.x
         || a.position.z - b.position.z
         || a.position.y - b.position.y
-        || a.lightID.localeCompare(b.lightID),
+        || a.channelID.localeCompare(b.channelID),
       )
-      .map((light, index) => [light.lightID, index]),
+      .map((channel, index) => [channel.channelID, index]),
   );
 }
 
@@ -135,9 +182,10 @@ function buildLightFrame(
   area: HueAreaResource,
   palette: HueRGBColor[],
   offset: number,
+  channelIDOverride?: string | null,
 ): HueAmbienceLightFrame {
   const colors = rotatePalette(palette, offset).slice(0, light.supportsGradient ? 5 : 1);
-  const channelID = area.entertainmentChannels?.find(channel => channel.lightID === light.id)?.id;
+  const channelID = channelIDOverride ?? area.entertainmentChannels?.find(channel => channel.lightID === light.id)?.id;
 
   return {
     light,

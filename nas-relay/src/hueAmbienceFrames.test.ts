@@ -185,6 +185,45 @@ test('frame engine keeps multiple colors for gradients and one color for basic l
   assert.deepEqual(frame.targets[0]!.lights[1]!.colors, [palette[1]]);
 });
 
+test('frame engine emits one entertainment frame per gradient channel', () => {
+  const frame = buildHueAmbienceFrame({
+    targets: [
+      {
+        ...target({
+          childLightIDs: ['gradient-strip'],
+          entertainmentChannels: [
+            { id: '0', lightID: 'gradient-strip', position: { x: -1, y: 0, z: 0 } },
+            { id: '1', lightID: 'gradient-strip', position: { x: 0, y: 0, z: 0 } },
+            { id: '2', lightID: 'gradient-strip', position: { x: 1, y: 0, z: 0 } },
+          ],
+        }),
+        lights: [target().lights[0]!],
+      },
+    ],
+    snapshot: snapshot(),
+    palette: [{ r: 0.05, g: 0.18, b: 0.44 }],
+    reason: 'steady',
+    phase: 0,
+    transitionSeconds: 0.28,
+    now,
+  });
+
+  assert.deepEqual(frame.targets[0]!.lights.map(light => light.channelID), ['0', '1', '2']);
+  assert.deepEqual(frame.targets[0]!.lights.map(light => light.light.id), [
+    'gradient-strip',
+    'gradient-strip',
+    'gradient-strip',
+  ]);
+  assert.deepEqual(
+    frame.targets[0]!.lights.map(light => light.colors[0]),
+    [
+      { r: 0.05, g: 0.18, b: 0.44 },
+      { r: 0.05, g: 0.18, b: 0.44 },
+      { r: 0.05, g: 0.18, b: 0.44 },
+    ],
+  );
+});
+
 test('frame engine metadata ignores non-entertainment targets when entertainment targets are complete', () => {
   const frame = buildHueAmbienceFrame({
     targets: [target(), roomTarget()],

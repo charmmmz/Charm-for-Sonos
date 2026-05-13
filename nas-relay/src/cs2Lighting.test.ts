@@ -4,7 +4,12 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 
-import { Cs2LightingService, buildCs2LightingDecision, c4BlinkIntervalMs } from './cs2Lighting.js';
+import {
+  Cs2LightingService,
+  buildCs2LightingDecision,
+  c4BlinkIntervalMs,
+  c4BlinkPhase,
+} from './cs2Lighting.js';
 import { HueAmbienceConfigStore } from './hueConfigStore.js';
 import type { HueAmbienceFrame } from './hueAmbienceFrames.js';
 import type { HueAmbienceRenderer } from './hueFrameRenderer.js';
@@ -155,6 +160,30 @@ test('CS2 planted bomb cadence follows the classic 40 second C4 beep curve', () 
   assert(Math.abs((decision?.transitionSeconds ?? 0) - 0.04675) < 0.0001);
 });
 
+test('CS2 planted bomb phase follows accumulated beep timeline', () => {
+  const firstBeep = c4BlinkPhase(0);
+  const nearFirstBeepEnd = c4BlinkPhase(239);
+  const afterFirstBeep = c4BlinkPhase(260);
+  const nextBeep = c4BlinkPhase(1_000);
+  const afterSecondBeep = c4BlinkPhase(1_260);
+
+  assert.equal(firstBeep.tick, 0);
+  assert.equal(firstBeep.lit, true);
+  assert.equal(nearFirstBeepEnd.lit, true);
+  assert.equal(afterFirstBeep.lit, false);
+  assert.equal(nextBeep.tick, 1);
+  assert.equal(nextBeep.lit, true);
+  assert.equal(afterSecondBeep.lit, false);
+
+  const thirtyFivePointOneSeconds = c4BlinkPhase(35_100);
+  const remainingAtThirtyFivePointOneSeconds = 4_900;
+  const moduloPhase = (35_100 % c4BlinkIntervalMs(remainingAtThirtyFivePointOneSeconds))
+    / c4BlinkIntervalMs(remainingAtThirtyFivePointOneSeconds);
+
+  assert.equal(thirtyFivePointOneSeconds.lit, false);
+  assert.notEqual(thirtyFivePointOneSeconds.phase, moduloPhase);
+});
+
 test('CS2 round freeze is a dim team background state', () => {
   const decision = buildCs2LightingDecision(snapshot({
     round: { phase: 'freezetime' },
@@ -201,6 +230,14 @@ test('CS2 lighting service renders enabled game state to mapped entertainment ar
     const color = frame.targets[0]?.lights[0]?.colors[0];
     assert(color && color.r > 0.05 && color.r < 1);
     assert.equal(frame.transitionSeconds, 0.08);
+    assert.equal(frame.effect?.source, 'cs2');
+    assert.equal(frame.effect?.reason, 'flash');
+    assert.match(frame.effect?.effectKey ?? '', /^76561197981496355:flash:/);
+    assert.equal(frame.effect?.mode, 'competitive');
+    assert.equal(frame.effect?.transitionSeconds, 0.08);
+    assert.equal(frame.effect?.attackSeconds, 0.12);
+    assert.equal(frame.effect?.holdSeconds, 0.08);
+    assert.equal(frame.effect?.fadeSeconds, 0.7);
     assert.deepEqual(service.status(), {
       enabled: true,
       active: true,
@@ -213,6 +250,36 @@ test('CS2 lighting service renders enabled game state to mapped entertainment ar
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+test('CS2 renderer factory selects the Hue EDK sidecar transport when requested', async () => {
+  const module = await import('./cs2Lighting.js') as {
+    createCs2HueRenderer?: (
+      config: HueAmbienceRuntimeConfig,
+      env: Record<string, string | undefined>,
+      options: Record<string, unknown>,
+    ) => HueAmbienceRenderer;
+  };
+  assert.equal(typeof module.createCs2HueRenderer, 'function');
+  const recorder = recordingFetch();
+  const renderer = module.createCs2HueRenderer({
+    ...config,
+    streamingClientKey: 'stream-key',
+    streamingApplicationId: 'stream-app',
+  }, {
+    HUE_RENDERER: 'edk-sidecar',
+    HUE_EDK_SIDECAR_URL: 'http://hue-edk-sidecar:8787',
+  }, {
+    sidecarFetch: recorder.fetch,
+  });
+
+  await renderer.render(rendererFactoryFrame());
+
+  assert.deepEqual(recorder.calls.map(call => call.path), [
+    '/configure',
+    '/session/start',
+    '/ambient/team',
+  ]);
 });
 
 test('CS2 lighting service renders to configured CS2 entertainment area before music mappings', async () => {
@@ -966,10 +1033,11 @@ test('CS2 planted bomb effect changes blink frame as the detonation window advan
     round: { bomb: 'planted' },
   }), undefined, { bombPlantedAt: plantedAt.getTime(), nowMs: plantedAt.getTime() });
 
+  const laterAt = plantedAt.getTime() + 15_100;
   const later = buildCs2LightingDecision(snapshot({
-    receivedAt: new Date(plantedAt.getTime() + 15_000),
+    receivedAt: new Date(laterAt),
     round: { bomb: 'planted' },
-  }), undefined, { bombPlantedAt: plantedAt.getTime(), nowMs: plantedAt.getTime() + 15_000 });
+  }), undefined, { bombPlantedAt: plantedAt.getTime(), nowMs: laterAt });
 
   assert.equal(first?.reason, 'bombPlanted');
   assert.equal(later?.reason, 'bombPlanted');
@@ -1110,4 +1178,65 @@ class RecordingCs2LightingLogger {
   warn(data: Record<string, unknown>, message: string): void {
     this.warnRecords.push({ data, message });
   }
+}
+
+interface RecordedRequest {
+  path: string;
+  body: unknown;
+}
+
+function recordingFetch(): {
+  calls: RecordedRequest[];
+  fetch: (url: string, init?: Record<string, unknown>) => Promise<{
+    ok: boolean;
+    status: number;
+    text(): Promise<string>;
+  }>;
+} {
+  const calls: RecordedRequest[] = [];
+  return {
+    calls,
+    fetch: async (url, init = {}) => {
+      calls.push({
+        path: new URL(url).pathname,
+        body: init.body ? JSON.parse(String(init.body)) : null,
+      });
+      return {
+        ok: true,
+        status: 200,
+        text: async () => '{"ok":true}',
+      };
+    },
+  };
+}
+
+function rendererFactoryFrame(): HueAmbienceFrame {
+  const now = new Date('2026-05-13T00:00:00Z');
+  return {
+    mode: 'streamingReady',
+    targets: [{
+      area: config.resources.areas[0]!,
+      metadataComplete: true,
+      lights: [{
+        light: config.resources.lights[0]!,
+        channelID: '0',
+        colors: [{ r: 0.05, g: 0.18, b: 0.44 }],
+      }],
+    }],
+    transitionSeconds: 0.28,
+    reason: 'steady',
+    createdAt: now,
+    metadataComplete: true,
+    phase: 0,
+    progressOffset: 0,
+    effect: {
+      source: 'cs2',
+      reason: 'ambient',
+      mode: 'competitive',
+      transitionSeconds: 0.28,
+      attackSeconds: 0,
+      holdSeconds: 0,
+      fadeSeconds: 0,
+    },
+  } as HueAmbienceFrame;
 }

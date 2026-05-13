@@ -6,6 +6,7 @@ import type { HueAmbienceRenderer } from './hueFrameRenderer.js';
 import { HueClipClient } from './hueClient.js';
 import type { HueAmbienceConfigStore } from './hueConfigStore.js';
 import type { Cs2GameStateSnapshot } from './cs2Types.js';
+import { createHueEdkSidecarRenderer, type HueEdkSidecarFetch } from './hueEdkSidecarRenderer.js';
 import { createHueEntertainmentStreamingOnlyRenderer, type HueEntertainmentControlClient } from './hueEntertainmentStream.js';
 import type {
   HueAmbienceRuntimeConfig,
@@ -35,6 +36,7 @@ export interface Cs2LightingDecision {
   holdSeconds: number;
   fadeSeconds: number;
   dynamicKey?: string;
+  effectKey?: string;
 }
 
 export interface Cs2LightingDecisionContext {
@@ -66,6 +68,10 @@ interface Cs2LightingServiceOptions {
   now?: () => number;
   logger?: Cs2LightingLogger;
   logFilePath?: string;
+}
+
+interface Cs2HueRendererFactoryOptions {
+  sidecarFetch?: HueEdkSidecarFetch;
 }
 
 const defaultActiveTimeoutMs = 60_000;
@@ -558,8 +564,12 @@ export class Cs2LightingService {
       }
 
       const startedAtMs = now - firstFrameLeadMs(decision);
+      const effectDecision = {
+        ...decision,
+        effectKey: decision.effectKey ?? `${providerSteamId}:${decision.reason}:${now}`,
+      };
       const held = {
-        decision,
+        decision: effectDecision,
         baseDecision: baseDecisionForHeldEffect(snapshot, decision, context),
         startedAtMs,
       };
@@ -819,7 +829,21 @@ export class Cs2LightingService {
   }
 }
 
-function createCs2HueRenderer(config: HueAmbienceRuntimeConfig): HueAmbienceRenderer {
+export function createCs2HueRenderer(
+  config: HueAmbienceRuntimeConfig,
+  env: Record<string, string | undefined> = process.env,
+  options: Cs2HueRendererFactoryOptions = {},
+): HueAmbienceRenderer {
+  if (env.HUE_RENDERER?.toLowerCase() === 'edk-sidecar') {
+    return createHueEdkSidecarRenderer(config, {
+      baseUrl: env.HUE_EDK_SIDECAR_URL ?? 'http://127.0.0.1:8787',
+      token: env.HUE_EDK_SIDECAR_TOKEN,
+      fetch: options.sidecarFetch,
+      targetFps: numericEnv(env.HUE_EDK_SIDECAR_TARGET_FPS) ?? 60,
+      sessionPolicy: env.HUE_EDK_SIDECAR_SESSION_POLICY === 'takeover' ? 'takeover' : 'reuse',
+    });
+  }
+
   const client = new HueClipClient(config.bridge, config.applicationKey);
   return createHueEntertainmentStreamingOnlyRenderer(
     config,
@@ -983,6 +1007,16 @@ function buildCs2Frame(
     phase: 0,
     transitionSeconds: decision.transitionSeconds,
     now,
+    effect: {
+      source: 'cs2',
+      reason: decision.reason,
+      mode: decision.mode,
+      transitionSeconds: decision.transitionSeconds,
+      attackSeconds: decision.attackSeconds,
+      holdSeconds: decision.holdSeconds,
+      fadeSeconds: decision.fadeSeconds,
+      effectKey: decision.effectKey,
+    },
   });
 }
 
@@ -1221,6 +1255,30 @@ export function c4BlinkIntervalMs(remainingMs: number): number {
   return Math.round(intervalMs * 1000) / 1000;
 }
 
+export function c4BlinkPhase(elapsedMs: number): { tick: number; phase: number; lit: boolean; periodMs: number } {
+  const elapsed = Math.max(0, Math.min(c4FuseMs, elapsedMs));
+  let tickStartMs = 0;
+  let tick = 0;
+  let periodMs = c4BlinkIntervalMs(c4FuseMs);
+
+  while (true) {
+    const remainingMs = Math.max(0, c4FuseMs - tickStartMs);
+    periodMs = c4BlinkIntervalMs(remainingMs);
+    const nextTickMs = tickStartMs + periodMs;
+    if (elapsed < nextTickMs || nextTickMs >= c4FuseMs) break;
+    tickStartMs = nextTickMs;
+    tick += 1;
+  }
+
+  const phase = Math.max(0, Math.min(1, (elapsed - tickStartMs) / periodMs));
+  return {
+    tick,
+    phase,
+    periodMs,
+    lit: phase < 0.24,
+  };
+}
+
 function bombPlantedDecision(
   mode: Exclude<Cs2LightingMode, 'idle' | 'unknown'>,
   context: Cs2LightingDecisionContext,
@@ -1228,11 +1286,10 @@ function bombPlantedDecision(
   const nowMs = context.nowMs ?? Date.now();
   const plantedAt = context.bombPlantedAt ?? nowMs;
   const elapsed = Math.max(0, Math.min(c4FuseMs, nowMs - plantedAt));
-  const remaining = Math.max(0, c4FuseMs - elapsed);
   const urgency = elapsed / c4FuseMs;
-  const periodMs = c4BlinkIntervalMs(remaining);
-  const phase = (elapsed % periodMs) / periodMs;
-  const lit = phase < 0.24;
+  const blink = c4BlinkPhase(elapsed);
+  const periodMs = blink.periodMs;
+  const lit = blink.lit;
   const baseIntensity = lit ? 1 : 0.18 + (urgency * 0.22);
   const palette = lit ? palettes.bomb : dim(palettes.bomb, baseIntensity);
 
@@ -1244,7 +1301,7 @@ function bombPlantedDecision(
     attackSeconds: 0,
     holdSeconds: 0,
     fadeSeconds: 0,
-    dynamicKey: `bomb:${Math.floor(elapsed / periodMs)}:${lit ? 'on' : 'off'}`,
+    dynamicKey: `bomb:${blink.tick}:${Math.floor(blink.phase * 1000)}:${lit ? 'on' : 'off'}`,
   };
 }
 
@@ -1315,6 +1372,7 @@ function heldEffectDecision(
       holdSeconds: held.decision.holdSeconds,
       fadeSeconds: held.decision.fadeSeconds,
       dynamicKey: `${held.decision.reason}:preset:${sampled.segment}:${Math.floor(sampled.progress * 10)}`,
+      effectKey: held.decision.effectKey,
     },
   };
 }
@@ -1537,4 +1595,9 @@ function snapChannel(value: number): number {
 function clamp01(value: number): number {
   if (!Number.isFinite(value)) return 0;
   return Math.max(0, Math.min(1, value));
+}
+
+function numericEnv(value: string | undefined): number | undefined {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
 }
