@@ -206,7 +206,6 @@ export class Cs2LightingService {
     const backgroundDecision = backgroundDecisionForSnapshot(snapshot, decisionContext);
     const baseDecision = overlayDecision ?? backgroundDecision;
     if (!baseDecision) {
-      this.clearActive(true);
       this.heldEffects.delete(snapshot.providerSteamId);
       this.fallbackReason = null;
       await this.logLightingCleared(snapshot, 'no_active_decision');

@@ -606,7 +606,7 @@ test('CS2 lighting service extends active lease from game state even when render
   }
 });
 
-test('CS2 lighting service clears active streaming on menu game state', async () => {
+test('CS2 lighting service keeps active streaming on menu game state', async () => {
   const dir = await mkdtemp(path.join(tmpdir(), 'cs2-lighting-'));
   try {
     const store = new HueAmbienceConfigStore(dir);
@@ -621,7 +621,8 @@ test('CS2 lighting service clears active streaming on menu game state', async ()
       player: { team: 'CT', activity: 'menu', state: { health: 100, burning: 0, flashed: 0 } },
     }));
 
-    assert.equal(service.status().active, false);
+    assert.equal(service.status().active, true);
+    assert.equal(renderer.stoppedFrames.length, 0);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
