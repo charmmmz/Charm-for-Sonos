@@ -223,16 +223,13 @@ export class HueAmbienceService {
     trackKey: string,
     runID: number,
   ): Promise<void> {
-    await this.stopActive(false);
+    const renderer = await this.rendererForTargets(config, targets);
     if (!this.isCurrentRun(runID)) return;
 
     this.activeTargets = targets;
     this.activeTrackKey = trackKey;
     this.activeGroupId = snapshot.groupId;
     this.lastError = null;
-
-    const client = this.clientFactory(config);
-    const renderer = this.rendererFactory(config, client);
     this.activeRenderer = renderer;
     const intervalSeconds = Math.max(config.flowIntervalSeconds, 1);
     const transitionSeconds = config.motionStyle === 'flowing' ? intervalSeconds : 4;
@@ -284,11 +281,22 @@ export class HueAmbienceService {
     }
   }
 
-  private async stopActive(applyStopBehavior = true): Promise<void> {
-    if (this.activeTimer) {
-      clearInterval(this.activeTimer);
-      this.activeTimer = null;
+  private async rendererForTargets(
+    config: HueAmbienceRuntimeConfig,
+    targets: HueResolvedAmbienceTarget[],
+  ): Promise<HueAmbienceRenderer> {
+    if (this.canReuseActiveRenderer(targets) && this.activeRenderer) {
+      this.clearActiveTimer();
+      return this.activeRenderer;
     }
+
+    await this.stopActive(false);
+    const client = this.clientFactory(config);
+    return this.rendererFactory(config, client);
+  }
+
+  private async stopActive(applyStopBehavior = true): Promise<void> {
+    this.clearActiveTimer();
 
     const config = this.config;
     const frame = this.activeFrame ?? this.pendingStopFrame;
@@ -325,6 +333,12 @@ export class HueAmbienceService {
     this.entertainmentTargetActive = false;
     this.activeEntertainmentMetadataComplete = false;
     this.activeRenderer = null;
+  }
+
+  private clearActiveTimer(): void {
+    if (!this.activeTimer) return;
+    clearInterval(this.activeTimer);
+    this.activeTimer = null;
   }
 
   private buildStopFrame(
@@ -375,4 +389,16 @@ export class HueAmbienceService {
   private snapshotIsUnrelatedToActiveGroup(snapshot: HueSnapshot): boolean {
     return this.activeGroupId !== null && snapshot.groupId !== this.activeGroupId;
   }
+
+  private canReuseActiveRenderer(targets: HueResolvedAmbienceTarget[]): boolean {
+    return this.activeRenderer !== null
+      && this.activeTargets.length > 0
+      && targetSignature(this.activeTargets) === targetSignature(targets);
+  }
+}
+
+function targetSignature(targets: HueResolvedAmbienceTarget[]): string {
+  return targets
+    .map(target => `${target.area.kind}:${target.area.id}`)
+    .join('|');
 }

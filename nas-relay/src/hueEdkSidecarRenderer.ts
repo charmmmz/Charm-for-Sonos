@@ -1,6 +1,7 @@
 import type { HueAmbienceFrame, HueAmbienceTargetFrame } from './hueAmbienceFrames.js';
+import { createHueEntertainmentStreamingRenderer, type HueEntertainmentControlClient } from './hueEntertainmentStream.js';
 import type { HueAmbienceRenderResult, HueAmbienceRenderer } from './hueFrameRenderer.js';
-import type { HueAmbienceRuntimeConfig, HueRGBColor } from './hueTypes.js';
+import type { HueAmbienceRuntimeConfig, HueLightClient, HueRGBColor } from './hueTypes.js';
 
 export type HueEdkSidecarFetch = (
   url: string,
@@ -23,11 +24,92 @@ export interface HueEdkSidecarRendererOptions {
   sessionPolicy?: 'reuse' | 'takeover';
 }
 
+export interface HueMusicAmbienceRendererOptions {
+  sidecarFetch?: HueEdkSidecarFetch;
+}
+
 export function createHueEdkSidecarRenderer(
   config: HueAmbienceRuntimeConfig,
   options: HueEdkSidecarRendererOptions,
 ): HueAmbienceRenderer {
   return new HueEdkSidecarRenderer(config, options);
+}
+
+export function createHueMusicAmbienceRenderer(
+  config: HueAmbienceRuntimeConfig,
+  lightClient: HueLightClient & HueEntertainmentControlClient,
+  env: Record<string, string | undefined> = process.env,
+  options: HueMusicAmbienceRendererOptions = {},
+): HueAmbienceRenderer {
+  const fallback = createHueEntertainmentStreamingRenderer(config, lightClient);
+  const rendererName = (env.HUE_MUSIC_RENDERER ?? env.HUE_RENDERER ?? '').toLowerCase();
+  if (rendererName !== 'edk-sidecar') return fallback;
+
+  return new OptionalHueEdkMusicRenderer(
+    new HueEdkSidecarRenderer(config, {
+      baseUrl: env.HUE_EDK_SIDECAR_URL ?? 'http://127.0.0.1:8787',
+      token: env.HUE_EDK_SIDECAR_TOKEN,
+      fetch: options.sidecarFetch,
+      targetFps: numericEnv(env.HUE_EDK_SIDECAR_TARGET_FPS) ?? 60,
+      sessionPolicy: env.HUE_EDK_SIDECAR_SESSION_POLICY === 'takeover' ? 'takeover' : 'reuse',
+    }),
+    fallback,
+  );
+}
+
+class OptionalHueEdkMusicRenderer implements HueAmbienceRenderer {
+  private activeRenderer: 'sidecar' | 'fallback' | null = null;
+
+  constructor(
+    private readonly sidecar: HueAmbienceRenderer,
+    private readonly fallback: HueAmbienceRenderer,
+  ) {}
+
+  async render(frame: HueAmbienceFrame): Promise<HueAmbienceRenderResult> {
+    if (!canUseSidecarForMusic(frame)) {
+      await this.releaseSidecarIfNeeded();
+      this.activeRenderer = 'fallback';
+      return await this.fallback.render(frame);
+    }
+
+    try {
+      await this.releaseFallbackIfNeeded();
+      const result = await this.sidecar.render(frame);
+      this.activeRenderer = 'sidecar';
+      return result;
+    } catch {
+      await this.sidecar.release?.().catch(() => {});
+      this.activeRenderer = 'fallback';
+      return await this.fallback.render(frame);
+    }
+  }
+
+  async stop(frame: HueAmbienceFrame): Promise<void> {
+    if (this.activeRenderer === 'sidecar') {
+      await this.sidecar.stop(frame);
+    } else if (this.activeRenderer === 'fallback') {
+      await this.fallback.stop(frame);
+    }
+    this.activeRenderer = null;
+  }
+
+  async release(): Promise<void> {
+    await Promise.allSettled([
+      this.sidecar.release?.(),
+      this.fallback.release?.(),
+    ]);
+    this.activeRenderer = null;
+  }
+
+  private async releaseSidecarIfNeeded(): Promise<void> {
+    if (this.activeRenderer !== 'sidecar') return;
+    await this.sidecar.release?.();
+  }
+
+  private async releaseFallbackIfNeeded(): Promise<void> {
+    if (this.activeRenderer !== 'fallback') return;
+    await this.fallback.release?.();
+  }
 }
 
 class HueEdkSidecarRenderer implements HueAmbienceRenderer {
@@ -177,13 +259,18 @@ class HueEdkSidecarRenderer implements HueAmbienceRenderer {
       return { transport: 'entertainmentStreaming', nativeEffectActive: true };
     }
 
-    await this.post('/ambient/team', {
-      team: teamForEffect(effect?.reason),
-      brightness: 1,
-      transitionMs: secondsToMs(frame.transitionSeconds, 240),
-      palette: framePalette(frame),
-    });
-    return { transport: 'entertainmentStreaming' };
+    if (effect?.source === 'cs2') {
+      await this.post('/ambient/team', {
+        team: teamForEffect(effect.reason),
+        brightness: 1,
+        transitionMs: secondsToMs(frame.transitionSeconds, 240),
+        palette: framePalette(frame),
+      });
+      return { transport: 'entertainmentStreaming' };
+    }
+
+    await this.post('/ambient/music', musicAmbientBody(frame, target));
+    return { transport: 'entertainmentStreaming', nativeEffectActive: true };
   }
 
   async stop(_frame: HueAmbienceFrame): Promise<void> {
@@ -272,9 +359,83 @@ function entertainmentTargetForSidecar(frame: HueAmbienceFrame): HueAmbienceTarg
   return targets[0];
 }
 
+function canUseSidecarForMusic(frame: HueAmbienceFrame): boolean {
+  if (frame.effect?.source === 'cs2') return false;
+  try {
+    entertainmentTargetForSidecar(frame);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function sidecarUrl(baseUrl: string, path: string): string {
   const normalized = baseUrl.endsWith('/') ? baseUrl.slice(0, -1) : baseUrl;
   return `${normalized}${path}`;
+}
+
+function musicAmbientBody(frame: HueAmbienceFrame, target: HueAmbienceTargetFrame): {
+  brightness: number;
+  transitionMs: number;
+  palette: HueRGBColor[];
+  lights: Array<{
+    channelId: string;
+    lightId: string;
+    position: { x: number; y: number; z: number };
+    colors: HueRGBColor[];
+  }>;
+} {
+  return {
+    brightness: 1,
+    transitionMs: secondsToMs(frame.transitionSeconds, 1200),
+    palette: frameMusicPalette(frame),
+    lights: target.lights.map((lightFrame, index) => ({
+      channelId: lightFrame.channelID ?? lightFrame.light.id,
+      lightId: lightFrame.light.id,
+      position: entertainmentChannelPosition(target, lightFrame.channelID, lightFrame.light.id, index),
+      colors: lightFrame.colors.map(clampColor),
+    })),
+  };
+}
+
+function entertainmentChannelPosition(
+  target: HueAmbienceTargetFrame,
+  channelID: string | null | undefined,
+  lightID: string,
+  index: number,
+): { x: number; y: number; z: number } {
+  const channel = target.area.entertainmentChannels?.find(candidate =>
+    (channelID && candidate.id === channelID) || candidate.lightID === lightID,
+  );
+  const position = channel?.position;
+  if (position && Number.isFinite(position.x) && Number.isFinite(position.y) && Number.isFinite(position.z)) {
+    return {
+      x: position.x,
+      y: position.y,
+      z: position.z,
+    };
+  }
+
+  const angle = (index % Math.max(target.lights.length, 1)) / Math.max(target.lights.length, 1) * Math.PI * 2;
+  return {
+    x: Math.cos(angle),
+    y: 0,
+    z: Math.sin(angle),
+  };
+}
+
+function frameMusicPalette(frame: HueAmbienceFrame): HueRGBColor[] {
+  const colors: HueRGBColor[] = [];
+  for (const target of frame.targets) {
+    for (const light of target.lights) {
+      for (const color of light.colors) {
+        if (colors.some(existing => sameColor(existing, color))) continue;
+        colors.push(clampColor(color));
+        if (colors.length >= 8) return colors;
+      }
+    }
+  }
+  return colors.length > 0 ? colors : [{ r: 0, g: 0, b: 0 }];
 }
 
 function secondsToMs(seconds: number | undefined, fallbackMs: number): number {
@@ -375,4 +536,10 @@ function clampColor(color: HueRGBColor): HueRGBColor {
 function clamp01(value: number): number {
   if (!Number.isFinite(value)) return 0;
   return Math.max(0, Math.min(1, value));
+}
+
+function numericEnv(value: string | undefined): number | null {
+  if (value === undefined) return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
 }

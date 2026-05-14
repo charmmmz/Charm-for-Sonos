@@ -41,6 +41,79 @@ test('Hue EDK sidecar renderer configures the selected entertainment area and se
   assert.equal(typeof (recorder.calls[2]?.body as Record<string, unknown>).brightness, 'number');
 });
 
+test('Hue EDK sidecar renderer sends Music Ambience frames with channel colors', async () => {
+  const { createHueEdkSidecarRenderer } = await loadSidecarRendererModule();
+  const recorder = recordingFetch();
+  const renderer = createHueEdkSidecarRenderer(config, {
+    baseUrl: 'http://hue-edk-sidecar:8787',
+    fetch: recorder.fetch,
+    targetFps: 60,
+  });
+
+  const result = await renderer.render(musicFrame([
+    { r: 0.82, g: 0.12, b: 0.08 },
+    { r: 0.08, g: 0.22, b: 0.74 },
+  ]));
+
+  assert.equal(result.transport, 'entertainmentStreaming');
+  assert.equal(result.nativeEffectActive, true);
+  assert.deepEqual(recorder.calls.map(call => call.path), [
+    '/configure',
+    '/session/start',
+    '/ambient/music',
+  ]);
+  assert.deepEqual(recorder.calls[2]?.body, {
+    brightness: 1,
+    transitionMs: 1400,
+    palette: [
+      { r: 0.82, g: 0.12, b: 0.08 },
+      { r: 0.08, g: 0.22, b: 0.74 },
+    ],
+    lights: [
+      {
+        channelId: '0',
+        lightId: 'light-1',
+        position: { x: -0.4, y: 0, z: 0.6 },
+        colors: [
+          { r: 0.82, g: 0.12, b: 0.08 },
+          { r: 0.08, g: 0.22, b: 0.74 },
+        ],
+      },
+    ],
+  });
+});
+
+test('Music Ambience renderer factory selects the EDK sidecar when configured', async () => {
+  const { createHueMusicAmbienceRenderer } = await loadSidecarRendererModule();
+  const recorder = recordingFetch();
+  const renderer = createHueMusicAmbienceRenderer(
+    config,
+    {
+      updateLight: async () => {
+        assert.fail('expected sidecar renderer instead of CLIP fallback');
+      },
+      setEntertainmentStreaming: async () => {
+        assert.fail('expected sidecar renderer instead of built-in DTLS fallback');
+      },
+    },
+    {
+      HUE_RENDERER: 'edk-sidecar',
+      HUE_EDK_SIDECAR_URL: 'http://hue-edk-sidecar:8787',
+      HUE_EDK_SIDECAR_TOKEN: 'relay-token',
+    },
+    { sidecarFetch: recorder.fetch },
+  );
+
+  await renderer.render(musicFrame([{ r: 0.82, g: 0.12, b: 0.08 }]));
+
+  assert.deepEqual(recorder.calls.map(call => call.path), [
+    '/configure',
+    '/session/start',
+    '/ambient/music',
+  ]);
+  assert.equal(recorder.calls[0]?.headers.authorization, 'Bearer relay-token');
+});
+
 test('Hue EDK sidecar renderer maps CS2 flash and kill frames to spatial effect endpoints', async () => {
   const { createHueEdkSidecarRenderer } = await loadSidecarRendererModule();
   const recorder = recordingFetch();
@@ -328,6 +401,21 @@ interface SidecarRendererModule {
     }>;
     stop(frame: HueAmbienceFrame): Promise<void>;
   };
+  createHueMusicAmbienceRenderer: (
+    config: HueAmbienceRuntimeConfig,
+    lightClient: {
+      updateLight(id: string, body: unknown): Promise<void>;
+      setEntertainmentStreaming(areaID: string, active: boolean): Promise<void>;
+    },
+    env: Record<string, string | undefined>,
+    options: Record<string, unknown>,
+  ) => {
+    render(frame: HueAmbienceFrame): Promise<{
+      transport: 'clipFallback' | 'streamingReady' | 'entertainmentStreaming';
+      nativeEffectActive?: boolean;
+    }>;
+    stop(frame: HueAmbienceFrame): Promise<void>;
+  };
 }
 
 async function loadSidecarRendererModule(): Promise<SidecarRendererModule> {
@@ -434,6 +522,34 @@ function cs2Frame(
   } as HueAmbienceFrame;
 }
 
+function musicFrame(palette: HueRGBColor[]): HueAmbienceFrame {
+  return buildHueAmbienceFrame({
+    targets: [{
+      area: config.resources.areas[0]!,
+      mapping: config.mappings[0]!,
+      lights: config.resources.lights,
+    }],
+    snapshot: {
+      groupId: '192.168.50.25',
+      speakerName: 'Office',
+      trackTitle: 'Who Knows',
+      artist: 'Daniel Caesar',
+      album: 'Never Enough',
+      albumArtUri: '/album.jpg',
+      isPlaying: true,
+      positionSeconds: 0,
+      durationSeconds: 180,
+      groupMemberCount: 1,
+      sampledAt: new Date('2026-05-13T00:00:00Z'),
+    },
+    palette,
+    reason: 'trackChange',
+    phase: 0,
+    transitionSeconds: 1.4,
+    now: new Date('2026-05-13T00:00:00Z'),
+  });
+}
+
 const config: HueAmbienceRuntimeConfig = {
   enabled: true,
   cs2LightingEnabled: true,
@@ -456,7 +572,12 @@ const config: HueAmbienceRuntimeConfig = {
       name: 'PC Area',
       kind: 'entertainmentArea',
       childLightIDs: ['light-1'],
-      entertainmentChannels: [{ id: '0', lightID: 'light-1', serviceID: 'svc-1' }],
+      entertainmentChannels: [{
+        id: '0',
+        lightID: 'light-1',
+        serviceID: 'svc-1',
+        position: { x: -0.4, y: 0, z: 0.6 },
+      }],
     }],
   },
   mappings: [{

@@ -11,6 +11,9 @@ import { TokenStore } from './tokenStore.js';
 import { HueAmbienceConfigStore } from './hueConfigStore.js';
 import { HueAmbienceService } from './hueAmbienceService.js';
 import { createHueAmbienceRouter } from './hueRoutes.js';
+import { createHueMusicAmbienceRenderer } from './hueEdkSidecarRenderer.js';
+import type { HueEntertainmentControlClient } from './hueEntertainmentStream.js';
+import type { HueLightClient } from './hueTypes.js';
 import { Cs2GameStateService } from './cs2GameState.js';
 import { createCs2GameStateRouter } from './cs2Routes.js';
 import { Cs2LightingService } from './cs2Lighting.js';
@@ -41,6 +44,13 @@ async function main(): Promise<void> {
   const hueAmbience = new HueAmbienceService(
     hueConfigStore,
     log.child({ module: 'hue-ambience' }),
+    undefined,
+    undefined,
+    undefined,
+    (config, client) => createHueMusicAmbienceRenderer(
+      config,
+      client as HueLightClient & HueEntertainmentControlClient,
+    ),
   );
   await hueAmbience.load();
   const cs2GameState = new Cs2GameStateService();

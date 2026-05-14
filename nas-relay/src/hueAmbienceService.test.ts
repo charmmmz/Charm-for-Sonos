@@ -417,6 +417,47 @@ test('service reports active Hue Entertainment streaming when renderer uses DTLS
   }
 });
 
+test('service keeps the active Entertainment renderer alive across track changes in the same area', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'hue-service-'));
+  try {
+    const store = new HueAmbienceConfigStore(dir);
+    await store.save({
+      ...entertainmentConfig(),
+      streamingClientKey: '00112233445566778899aabbccddeeff',
+    });
+    const renderers: ReleasableHueAmbienceRenderer[] = [];
+    const service = new HueAmbienceService(
+      store,
+      pino({ enabled: false }),
+      () => new RecordingHueLightClient(),
+      snapshot => snapshot.albumArtUri?.includes('two')
+        ? [{ r: 0, g: 0, b: 1 }]
+        : [{ r: 1, g: 0, b: 0 }],
+      DEFAULT_STOP_GRACE_MS,
+      () => {
+        const renderer = new ReleasableHueAmbienceRenderer();
+        renderers.push(renderer);
+        return renderer;
+      },
+    );
+    await service.load();
+
+    service.receiveSnapshot(snapshot('/art-one.jpg'));
+    await waitFor(() => renderers[0]?.renderedFrames.length === 1);
+
+    service.receiveSnapshot(snapshot('/art-two.jpg'));
+    await waitFor(() => renderers[0]?.renderedFrames.length === 2);
+
+    assert.equal(renderers.length, 1);
+    assert.equal(renderers[0]!.releaseCount, 0);
+    assert.equal(renderers[0]!.stoppedFrames.length, 0);
+    assert.match(service.status().lastTrackKey ?? '', /art-two/);
+    assert.equal(service.status().renderMode, 'entertainmentStreaming');
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test('service reports incomplete entertainment metadata without selecting unrelated lights', async () => {
   const dir = await mkdtemp(path.join(tmpdir(), 'hue-service-'));
   try {
