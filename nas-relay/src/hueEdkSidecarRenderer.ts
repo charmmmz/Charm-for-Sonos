@@ -151,55 +151,6 @@ class HueEdkSidecarRenderer implements HueAmbienceRenderer {
       return { transport: 'entertainmentStreaming', nativeEffectActive: true };
     }
 
-    if (effect?.source === 'cs2' && effect.reason === 'kill') {
-      if (!this.markEffectForPlayback(effect.effectKey, frame.createdAt)) {
-        return { transport: 'entertainmentStreaming', nativeEffectActive: true };
-      }
-      const profile = nativeKillProfile(effect.strength);
-      await this.post('/effect/kill', {
-        ...profile.color,
-        intensity: Math.max(frameIntensity(frame), profile.intensity),
-        durationMs: profile.durationMs,
-        radius: profile.radius,
-      });
-      return { transport: 'entertainmentStreaming', nativeEffectActive: true };
-    }
-
-    if (effect?.source === 'cs2' && effect.reason === 'burning') {
-      if (!this.markEffectForPlayback(effect.effectKey, frame.createdAt)) {
-        return { transport: 'entertainmentStreaming', nativeEffectActive: true };
-      }
-      const color = nativePulseColor(effect.reason, frame);
-      await this.post('/effect/sphere', {
-        kind: 'burning',
-        ...color,
-        intensity: frameIntensity(frame),
-        attackMs: secondsToMs(effect.attackSeconds, 80),
-        holdMs: secondsToMs(effect.holdSeconds, 120),
-        fadeMs: secondsToMs(effect.fadeSeconds, 520),
-        x: 0,
-        y: 0,
-        z: -0.82,
-        radius: 1.35,
-      });
-      return { transport: 'entertainmentStreaming', nativeEffectActive: true };
-    }
-
-    if (effect?.source === 'cs2' && isPulseEffect(effect.reason)) {
-      if (!this.markEffectForPlayback(effect.effectKey, frame.createdAt)) {
-        return { transport: 'entertainmentStreaming', nativeEffectActive: true };
-      }
-      const color = nativePulseColor(effect.reason, frame);
-      await this.post('/effect/pulse', {
-        ...color,
-        intensity: nativePulseIntensity(effect.reason, frame),
-        attackMs: secondsToMs(effect.attackSeconds, 80),
-        holdMs: secondsToMs(effect.holdSeconds, 120),
-        fadeMs: secondsToMs(effect.fadeSeconds, 520),
-      });
-      return { transport: 'entertainmentStreaming', nativeEffectActive: true };
-    }
-
     if (effect?.source === 'cs2' && effect.reason === 'bombPlanted') {
       if (!this.markEffectForPlayback(effect.effectKey, frame.createdAt)) {
         return { transport: 'entertainmentStreaming', nativeEffectActive: true };
@@ -449,59 +400,6 @@ function secondsToMs(seconds: number | undefined, fallbackMs: number): number {
 function teamForEffect(reason: string | undefined): 'CT' | 'T' | 'observer' | 'neutral' {
   if (reason === 'observerAmbient') return 'observer';
   return 'neutral';
-}
-
-function isPulseEffect(reason: string | undefined): boolean {
-  return reason === 'damage';
-}
-
-function nativePulseColor(reason: string, frame: HueAmbienceFrame): HueRGBColor {
-  switch (reason) {
-    case 'burning':
-      return { r: 1, g: 0.28, b: 0 };
-    case 'death':
-      return { r: 0.8, g: 0.02, b: 0.02 };
-    case 'damage':
-    default:
-      return framePalette(frame)[0] ?? { r: 1, g: 0.05, b: 0.02 };
-  }
-}
-
-function nativePulseIntensity(reason: string, frame: HueAmbienceFrame): number {
-  const intensity = frameIntensity(frame);
-  if (reason === 'death') return Math.min(intensity, 0.55);
-  return intensity;
-}
-
-function nativeKillProfile(strength: number | undefined): {
-  color: HueRGBColor;
-  intensity: number;
-  durationMs: number;
-  radius: number;
-} {
-  const tier = Math.min(3, Math.max(1, Math.round(strength ?? 1)));
-  if (tier >= 3) {
-    return {
-      color: { r: 1, g: 1, b: 1 },
-      intensity: 1,
-      durationMs: 210,
-      radius: 2.5,
-    };
-  }
-  if (tier === 2) {
-    return {
-      color: { r: 1, g: 1, b: 1 },
-      intensity: 0.95,
-      durationMs: 190,
-      radius: 2.1,
-    };
-  }
-  return {
-    color: { r: 1, g: 1, b: 1 },
-    intensity: 0.86,
-    durationMs: 170,
-    radius: 1.7,
-  };
 }
 
 function framePalette(frame: HueAmbienceFrame): HueRGBColor[] {
