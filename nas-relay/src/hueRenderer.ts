@@ -7,6 +7,7 @@ import type {
   HueSnapshot,
   HueSonosMapping,
   HueLightClient,
+  HueResolveTargetOptions,
 } from './hueTypes.js';
 
 export interface HueLightUpdateBody {
@@ -37,6 +38,7 @@ export function shouldUseLightForAmbience(
 export function resolveHueTargets(
   config: HueAmbienceRuntimeConfig,
   snapshot: HueSnapshot,
+  options: HueResolveTargetOptions = {},
 ): HueResolvedAmbienceTarget[] {
   const lightsByID = new Map(config.resources.lights.map(light => [light.id, light]));
   const seenAreaIDs = new Set<string>();
@@ -44,7 +46,12 @@ export function resolveHueTargets(
   return config.mappings
     .filter(mapping => mappingMatchesSnapshot(mapping, snapshot))
     .flatMap(mapping => {
-      const area = resolveArea(config, mapping.preferredTarget) ?? resolveArea(config, mapping.fallbackTarget);
+      const preferredArea = resolveArea(config, mapping.preferredTarget);
+      const fallbackArea = resolveArea(config, mapping.fallbackTarget);
+      const shouldPreferFallback = options.preferFallbackForEntertainment === true
+        && preferredArea?.kind === 'entertainmentArea'
+        && fallbackArea !== undefined;
+      const area = shouldPreferFallback ? fallbackArea : preferredArea ?? fallbackArea;
       if (!area || seenAreaIDs.has(area.id)) return [];
       seenAreaIDs.add(area.id);
 

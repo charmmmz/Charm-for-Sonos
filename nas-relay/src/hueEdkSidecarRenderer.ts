@@ -1,6 +1,9 @@
 import type { HueAmbienceFrame, HueAmbienceTargetFrame } from './hueAmbienceFrames.js';
-import { createHueEntertainmentStreamingRenderer, type HueEntertainmentControlClient } from './hueEntertainmentStream.js';
-import type { HueAmbienceRenderResult, HueAmbienceRenderer } from './hueFrameRenderer.js';
+import {
+  createHueEntertainmentStreamingOnlyRenderer,
+  type HueEntertainmentControlClient,
+} from './hueEntertainmentStream.js';
+import { ClipHueAmbienceRenderer, type HueAmbienceRenderResult, type HueAmbienceRenderer } from './hueFrameRenderer.js';
 import type { HueAmbienceRuntimeConfig, HueLightClient, HueRGBColor } from './hueTypes.js';
 
 export type HueEdkSidecarFetch = (
@@ -41,74 +44,67 @@ export function createHueMusicAmbienceRenderer(
   env: Record<string, string | undefined> = process.env,
   options: HueMusicAmbienceRendererOptions = {},
 ): HueAmbienceRenderer {
-  const fallback = createHueEntertainmentStreamingRenderer(config, lightClient);
+  const clipFallback = new ClipHueAmbienceRenderer(lightClient);
   const rendererName = (env.HUE_MUSIC_RENDERER ?? env.HUE_RENDERER ?? '').toLowerCase();
-  if (rendererName !== 'edk-sidecar') return fallback;
-
-  return new OptionalHueEdkMusicRenderer(
-    new HueEdkSidecarRenderer(config, {
+  const syncRenderer = rendererName === 'edk-sidecar'
+    ? new HueEdkSidecarRenderer(config, {
       baseUrl: env.HUE_EDK_SIDECAR_URL ?? 'http://127.0.0.1:8787',
       token: env.HUE_EDK_SIDECAR_TOKEN,
       fetch: options.sidecarFetch,
       targetFps: numericEnv(env.HUE_EDK_SIDECAR_TARGET_FPS) ?? 60,
       sessionPolicy: env.HUE_EDK_SIDECAR_SESSION_POLICY === 'takeover' ? 'takeover' : 'reuse',
-    }),
-    fallback,
-  );
+    })
+    : createHueEntertainmentStreamingOnlyRenderer(config, lightClient);
+
+  return new MusicSyncFallbackRenderer(syncRenderer, clipFallback);
 }
 
-class OptionalHueEdkMusicRenderer implements HueAmbienceRenderer {
-  private activeRenderer: 'sidecar' | 'fallback' | null = null;
+class MusicSyncFallbackRenderer implements HueAmbienceRenderer {
+  private activeRenderer: 'sync' | 'clip' | null = null;
 
   constructor(
-    private readonly sidecar: HueAmbienceRenderer,
-    private readonly fallback: HueAmbienceRenderer,
+    private readonly sync: HueAmbienceRenderer,
+    private readonly clipFallback: HueAmbienceRenderer,
   ) {}
 
   async render(frame: HueAmbienceFrame): Promise<HueAmbienceRenderResult> {
-    if (!canUseSidecarForMusic(frame)) {
-      await this.releaseSidecarIfNeeded();
-      this.activeRenderer = 'fallback';
-      return await this.fallback.render(frame);
+    if (!canUseMusicSync(frame)) {
+      await this.releaseSyncIfNeeded();
+      this.activeRenderer = 'clip';
+      return await this.clipFallback.render(frame);
     }
 
     try {
-      await this.releaseFallbackIfNeeded();
-      const result = await this.sidecar.render(frame);
-      this.activeRenderer = 'sidecar';
+      const result = await this.sync.render(frame);
+      this.activeRenderer = 'sync';
       return result;
     } catch {
-      await this.sidecar.release?.().catch(() => {});
-      this.activeRenderer = 'fallback';
-      return await this.fallback.render(frame);
+      await this.sync.release?.().catch(() => {});
+      this.activeRenderer = 'clip';
+      return await this.clipFallback.render(frame);
     }
   }
 
   async stop(frame: HueAmbienceFrame): Promise<void> {
-    if (this.activeRenderer === 'sidecar') {
-      await this.sidecar.stop(frame);
-    } else if (this.activeRenderer === 'fallback') {
-      await this.fallback.stop(frame);
+    if (this.activeRenderer === 'sync') {
+      await this.sync.stop(frame);
+    } else if (this.activeRenderer === 'clip') {
+      await this.clipFallback.stop(frame);
     }
     this.activeRenderer = null;
   }
 
   async release(): Promise<void> {
     await Promise.allSettled([
-      this.sidecar.release?.(),
-      this.fallback.release?.(),
+      this.sync.release?.(),
+      this.clipFallback.release?.(),
     ]);
     this.activeRenderer = null;
   }
 
-  private async releaseSidecarIfNeeded(): Promise<void> {
-    if (this.activeRenderer !== 'sidecar') return;
-    await this.sidecar.release?.();
-  }
-
-  private async releaseFallbackIfNeeded(): Promise<void> {
-    if (this.activeRenderer !== 'fallback') return;
-    await this.fallback.release?.();
+  private async releaseSyncIfNeeded(): Promise<void> {
+    if (this.activeRenderer !== 'sync') return;
+    await this.sync.release?.();
   }
 }
 
@@ -362,8 +358,10 @@ function entertainmentTargetForSidecar(frame: HueAmbienceFrame): HueAmbienceTarg
   return targets[0];
 }
 
-function canUseSidecarForMusic(frame: HueAmbienceFrame): boolean {
+function canUseMusicSync(frame: HueAmbienceFrame): boolean {
   if (frame.effect?.source === 'cs2') return false;
+  if ((frame.groupMemberCount ?? 1) > 1) return false;
+  if (!frame.metadataComplete) return false;
   try {
     entertainmentTargetForSidecar(frame);
     return true;

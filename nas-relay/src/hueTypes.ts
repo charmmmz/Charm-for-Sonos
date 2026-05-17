@@ -101,6 +101,10 @@ export interface HueResolvedAmbienceTarget {
   lights: HueLightResource[];
 }
 
+export interface HueResolveTargetOptions {
+  preferFallbackForEntertainment?: boolean;
+}
+
 export interface HueAmbienceStatus {
   configured: boolean;
   enabled?: boolean;

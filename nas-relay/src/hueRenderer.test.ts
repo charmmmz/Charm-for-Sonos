@@ -127,6 +127,39 @@ test('target resolution matches relay group id and trusts entertainment area mem
   assert.deepEqual(targets[0]!.lights.map(l => l.id), ['decor-gradient', 'task-lamp', 'old-cache']);
 });
 
+test('target resolution can prefer configured fallback when entertainment sync is unavailable', () => {
+  const fallbackConfig = runtimeConfig({
+    resources: {
+      lights: [
+        ...lights,
+        light({ id: 'room-lamp', ownerID: 'room-device' }),
+      ],
+      areas: [
+        config.resources.areas[0]!,
+        {
+          id: 'room-1',
+          name: 'Playroom',
+          kind: 'room',
+          childLightIDs: ['room-lamp'],
+          childDeviceIDs: ['room-device'],
+        },
+      ],
+    },
+    mappings: [{
+      ...config.mappings[0]!,
+      preferredTarget: { kind: 'entertainmentArea', id: 'ent-1' },
+      fallbackTarget: { kind: 'room', id: 'room-1' },
+    }],
+  });
+
+  const targets = resolveHueTargets(fallbackConfig, snapshot(), {
+    preferFallbackForEntertainment: true,
+  });
+
+  assert.deepEqual(targets.map(t => t.area.id), ['room-1']);
+  assert.deepEqual(targets[0]!.lights.map(l => l.id), ['room-lamp']);
+});
+
 test('target resolution supports direct light targets by id', () => {
   const directLightConfig: HueAmbienceRuntimeConfig = {
     ...config,

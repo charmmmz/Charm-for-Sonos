@@ -191,7 +191,9 @@ export class HueAmbienceService {
       return;
     }
 
-    const targets = resolveHueTargets(config, snapshot);
+    const targets = resolveHueTargets(config, snapshot, {
+      preferFallbackForEntertainment: isGroupedPlayback(snapshot),
+    });
     if (targets.length === 0) {
       if (this.snapshotIsUnrelatedToActiveGroup(snapshot)) return;
       this.scheduleStopActive();
@@ -207,6 +209,7 @@ export class HueAmbienceService {
       snapshot.artist,
       snapshot.album,
       snapshot.albumArtUri,
+      snapshot.groupMemberCount,
     ].join('|');
     if (trackKey === this.activeTrackKey && this.activeTargets.length > 0 && this.activeFrame) {
       return;
@@ -401,4 +404,8 @@ function targetSignature(targets: HueResolvedAmbienceTarget[]): string {
   return targets
     .map(target => `${target.area.kind}:${target.area.id}`)
     .join('|');
+}
+
+function isGroupedPlayback(snapshot: HueSnapshot): boolean {
+  return snapshot.groupMemberCount > 1;
 }

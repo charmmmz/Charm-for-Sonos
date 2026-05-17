@@ -114,6 +114,69 @@ test('Music Ambience renderer factory selects the EDK sidecar when configured', 
   assert.equal(recorder.calls[0]?.headers.authorization, 'Bearer relay-token');
 });
 
+test('Music Ambience renderer factory skips sync for grouped playback and uses CLIP color rotation', async () => {
+  const { createHueMusicAmbienceRenderer } = await loadSidecarRendererModule();
+  const recorder = recordingFetch();
+  const updates: Array<{ id: string; body: unknown }> = [];
+  const renderer = createHueMusicAmbienceRenderer(
+    config,
+    {
+      updateLight: async (id, body) => {
+        updates.push({ id, body });
+      },
+      setEntertainmentStreaming: async () => {
+        assert.fail('expected grouped playback to avoid built-in Entertainment sync');
+      },
+    },
+    {
+      HUE_RENDERER: 'edk-sidecar',
+      HUE_EDK_SIDECAR_URL: 'http://hue-edk-sidecar:8787',
+    },
+    { sidecarFetch: recorder.fetch },
+  );
+
+  const result = await renderer.render(musicFrame(
+    [{ r: 0.82, g: 0.12, b: 0.08 }],
+    { groupMemberCount: 2 },
+  ));
+
+  assert.deepEqual(recorder.calls, []);
+  assert.equal(result.transport, 'clipFallback');
+  assert.deepEqual(updates.map(update => update.id), ['light-1']);
+});
+
+test('Music Ambience renderer factory falls back directly to CLIP when sidecar sync is unavailable', async () => {
+  const { createHueMusicAmbienceRenderer } = await loadSidecarRendererModule();
+  const recorder = recordingFetch({ failPath: '/session/start', status: 409 });
+  const updates: Array<{ id: string; body: unknown }> = [];
+  const renderer = createHueMusicAmbienceRenderer(
+    config,
+    {
+      updateLight: async (id, body) => {
+        updates.push({ id, body });
+      },
+      setEntertainmentStreaming: async () => {
+        assert.fail('expected sidecar failure to use CLIP fallback without built-in DTLS');
+      },
+    },
+    {
+      HUE_RENDERER: 'edk-sidecar',
+      HUE_EDK_SIDECAR_URL: 'http://hue-edk-sidecar:8787',
+    },
+    { sidecarFetch: recorder.fetch },
+  );
+
+  const result = await renderer.render(musicFrame([{ r: 0.82, g: 0.12, b: 0.08 }]));
+
+  assert.deepEqual(recorder.calls.map(call => call.path), [
+    '/configure',
+    '/session/start',
+    '/session/stop',
+  ]);
+  assert.equal(result.transport, 'clipFallback');
+  assert.deepEqual(updates.map(update => update.id), ['light-1']);
+});
+
 test('Hue EDK sidecar renderer maps CS2 flash and kill frames to spatial effect endpoints', async () => {
   const { createHueEdkSidecarRenderer } = await loadSidecarRendererModule();
   const recorder = recordingFetch();
@@ -471,7 +534,7 @@ interface RecordedRequest {
   body: unknown;
 }
 
-function recordingFetch(): {
+function recordingFetch(options: { failPath?: string; status?: number } = {}): {
   calls: RecordedRequest[];
   fetch: (url: string, init?: Record<string, unknown>) => Promise<{
     ok: boolean;
@@ -488,6 +551,13 @@ function recordingFetch(): {
         headers: normalizeHeaders(init.headers),
         body: init.body ? JSON.parse(String(init.body)) : null,
       });
+      if (options.failPath && new URL(url).pathname === options.failPath) {
+        return {
+          ok: false,
+          status: options.status ?? 500,
+          text: async () => '{"error":"sync occupied"}',
+        };
+      }
       return {
         ok: true,
         status: 200,
@@ -562,7 +632,10 @@ function cs2Frame(
   } as HueAmbienceFrame;
 }
 
-function musicFrame(palette: HueRGBColor[]): HueAmbienceFrame {
+function musicFrame(
+  palette: HueRGBColor[],
+  snapshotOverrides: Partial<Parameters<typeof buildHueAmbienceFrame>[0]['snapshot']> = {},
+): HueAmbienceFrame {
   return buildHueAmbienceFrame({
     targets: [{
       area: config.resources.areas[0]!,
@@ -581,6 +654,7 @@ function musicFrame(palette: HueRGBColor[]): HueAmbienceFrame {
       durationSeconds: 180,
       groupMemberCount: 1,
       sampledAt: new Date('2026-05-13T00:00:00Z'),
+      ...snapshotOverrides,
     },
     palette,
     reason: 'trackChange',

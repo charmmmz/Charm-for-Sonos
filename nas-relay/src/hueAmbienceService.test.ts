@@ -491,6 +491,65 @@ test('service lets native Entertainment effects own flowing motion without relay
   }
 });
 
+test('service uses configured album color fallback target for grouped playback', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'hue-service-'));
+  try {
+    const base = entertainmentConfig();
+    const store = new HueAmbienceConfigStore(dir);
+    await store.save({
+      ...base,
+      resources: {
+        lights: [
+          ...base.resources.lights,
+          {
+            id: 'room-light',
+            name: 'Room Lamp',
+            ownerID: 'room-device',
+            supportsColor: true,
+            supportsGradient: false,
+            supportsEntertainment: true,
+            function: 'decorative',
+            functionMetadataResolved: true,
+          },
+        ],
+        areas: [
+          ...base.resources.areas,
+          {
+            id: 'room-1',
+            name: 'Fallback Room',
+            kind: 'room',
+            childLightIDs: ['room-light'],
+            childDeviceIDs: ['room-device'],
+          },
+        ],
+      },
+      mappings: [{
+        ...base.mappings[0]!,
+        fallbackTarget: { kind: 'room', id: 'room-1' },
+      }],
+      streamingClientKey: '00112233445566778899aabbccddeeff',
+    });
+    const client = new RecordingHueLightClient();
+    const service = new HueAmbienceService(
+      store,
+      pino({ enabled: false }),
+      () => client,
+      () => [{ r: 1, g: 0, b: 0 }, { r: 0, g: 0, b: 1 }],
+    );
+    await service.load();
+
+    service.receiveSnapshot({ ...snapshot('/grouped-art.jpg'), groupMemberCount: 2 });
+    await waitFor(() => client.updates.length === 1);
+
+    assert.deepEqual(client.updates.map(update => update.id), ['room-light']);
+    assert.deepEqual(service.status().activeTargetIds, ['room-1']);
+    assert.equal(service.status().renderMode, 'clipFallback');
+    assert.equal(service.status().entertainmentTargetActive, false);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test('service reports incomplete entertainment metadata without selecting unrelated lights', async () => {
   const dir = await mkdtemp(path.join(tmpdir(), 'hue-service-'));
   try {

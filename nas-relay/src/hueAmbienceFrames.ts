@@ -30,6 +30,7 @@ export interface HueAmbienceFrame {
   transitionSeconds: number;
   reason: HueAmbienceFrameReason;
   createdAt: Date;
+  groupMemberCount?: number;
   metadataComplete: boolean;
   phase: number;
   progressOffset: number;
@@ -99,6 +100,7 @@ export function buildHueAmbienceFrame(input: BuildHueAmbienceFrameInput): HueAmb
     transitionSeconds: input.transitionSeconds,
     reason: input.reason,
     createdAt: input.now ?? new Date(),
+    groupMemberCount: input.snapshot.groupMemberCount,
     metadataComplete: entertainmentTargetFrames.length > 0
       && entertainmentTargetFrames.every(target => target.metadataComplete),
     phase: input.phase,
