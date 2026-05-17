@@ -1331,7 +1331,7 @@ function effectProfileForDecision(decision: Cs2LightingDecision): string {
     case 'flash':
       return 'flash_overlay';
     case 'kill':
-      return 'kill_burst';
+      return 'kill_multiflash';
     case 'lowHealth':
       return 'low_health_background';
     case 'observerAmbient':
@@ -1349,7 +1349,7 @@ function effectLayerForDecision(decision: Cs2LightingDecision): 'background' | '
 
 function sidecarCommandForDecision(
   decision: Cs2LightingDecision,
-): 'ambient/team' | 'effect/sphere' | 'effect/iterator' | 'effect/c4' | 'effect/explosion' {
+): 'ambient/team' | 'effect/sphere' | 'effect/iterator' | 'effect/c4' | 'effect/explosion' | 'effect/kill-multiflash' {
   switch (decision.reason) {
     case 'bombExploded':
       return 'effect/explosion';
@@ -1359,6 +1359,8 @@ function sidecarCommandForDecision(
       return 'effect/iterator';
     case 'flash':
       return 'effect/sphere';
+    case 'kill':
+      return 'effect/kill-multiflash';
     default:
       return 'ambient/team';
   }

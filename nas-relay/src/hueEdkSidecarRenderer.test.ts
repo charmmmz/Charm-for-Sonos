@@ -177,7 +177,7 @@ test('Music Ambience renderer factory falls back directly to CLIP when sidecar s
   assert.deepEqual(updates.map(update => update.id), ['light-1']);
 });
 
-test('Hue EDK sidecar renderer maps CS2 flash to spatial effect and lets kill frames stream as ambience', async () => {
+test('Hue EDK sidecar renderer maps CS2 flash and kill frames to native effects', async () => {
   const { createHueEdkSidecarRenderer } = await loadSidecarRendererModule();
   const recorder = recordingFetch();
   const renderer = createHueEdkSidecarRenderer(config, {
@@ -192,19 +192,20 @@ test('Hue EDK sidecar renderer maps CS2 flash to spatial effect and lets kill fr
     fadeSeconds: 0.7,
     transitionSeconds: 0.08,
   }));
-  await renderer.render(cs2Frame('kill', [{ r: 1, g: 0.04, b: 0.02 }], {
+  const killResult = await renderer.render(cs2Frame('kill', [{ r: 1, g: 0.04, b: 0.02 }], {
     strength: 3,
-    attackSeconds: 0.05,
-    holdSeconds: 0.1,
+    attackSeconds: 0.035,
+    holdSeconds: 0.045,
     fadeSeconds: 0.2,
     transitionSeconds: 0.08,
   }));
 
+  assert.equal(killResult.nativeEffectActive, true);
   assert.deepEqual(recorder.calls.map(call => call.path), [
     '/configure',
     '/session/start',
     '/effect/sphere',
-    '/ambient/team',
+    '/effect/kill-multiflash',
   ]);
   assert.deepEqual(recorder.calls[2]?.body, {
     kind: 'flash',
@@ -221,9 +222,17 @@ test('Hue EDK sidecar renderer maps CS2 flash to spatial effect and lets kill fr
     z: 1,
     radius: 3.1,
   });
-  assert.deepEqual((recorder.calls[3]?.body as Record<string, unknown>).palette, [
-    { r: 1, g: 0.04, b: 0.02 },
-  ]);
+  assert.deepEqual(recorder.calls[3]?.body, {
+    r: 1,
+    g: 0.04,
+    b: 0.02,
+    intensity: 1,
+    count: 3,
+    attackMs: 35,
+    holdMs: 45,
+    fadeMs: 55,
+    gapMs: 35,
+  });
 });
 
 test('Hue EDK sidecar renderer lets CS2 death preset drive ambient frames', async () => {

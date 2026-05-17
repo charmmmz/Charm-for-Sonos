@@ -147,6 +147,25 @@ class HueEdkSidecarRenderer implements HueAmbienceRenderer {
       return { transport: 'entertainmentStreaming', nativeEffectActive: true };
     }
 
+    if (effect?.source === 'cs2' && effect.reason === 'kill') {
+      if (!this.markEffectForPlayback(effect.effectKey, frame.createdAt)) {
+        return { transport: 'entertainmentStreaming', nativeEffectActive: true };
+      }
+      const color = framePalette(frame)[0] ?? { r: 1, g: 0.04, b: 0.02 };
+      await this.post('/effect/kill-multiflash', {
+        r: color.r,
+        g: color.g,
+        b: color.b,
+        intensity: Math.max(frameIntensity(frame), 0.86),
+        count: killFlashCount(effect.strength),
+        attackMs: secondsToMs(effect.attackSeconds, 35),
+        holdMs: secondsToMs(effect.holdSeconds, 45),
+        fadeMs: 55,
+        gapMs: 35,
+      });
+      return { transport: 'entertainmentStreaming', nativeEffectActive: true };
+    }
+
     if (effect?.source === 'cs2' && effect.reason === 'bombPlanted') {
       if (!this.markEffectForPlayback(effect.effectKey, frame.createdAt)) {
         return { transport: 'entertainmentStreaming', nativeEffectActive: true };
@@ -416,6 +435,10 @@ function framePalette(frame: HueAmbienceFrame): HueRGBColor[] {
 
 function flashEffectPhase(value: string | undefined): 'sustain' | 'release' {
   return value === 'release' ? 'release' : 'sustain';
+}
+
+function killFlashCount(strength: number | undefined): number {
+  return Math.min(5, Math.max(1, Math.round(strength ?? 1)));
 }
 
 function frameIntensity(frame: HueAmbienceFrame): number {
