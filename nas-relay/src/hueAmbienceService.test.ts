@@ -458,6 +458,39 @@ test('service keeps the active Entertainment renderer alive across track changes
   }
 });
 
+test('service lets native Entertainment effects own flowing motion without relay frame loop', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'hue-service-'));
+  let service: HueAmbienceService | null = null;
+  try {
+    const store = new HueAmbienceConfigStore(dir);
+    await store.save({
+      ...entertainmentConfig(),
+      motionStyle: 'flowing',
+      flowIntervalSeconds: 1,
+      streamingClientKey: '00112233445566778899aabbccddeeff',
+    });
+    const renderer = new FixedTransportHueAmbienceRenderer('entertainmentStreaming', true);
+    service = new HueAmbienceService(
+      store,
+      pino({ enabled: false }),
+      () => new RecordingHueLightClient(),
+      () => [{ r: 1, g: 0, b: 0 }, { r: 0, g: 0, b: 1 }],
+      DEFAULT_STOP_GRACE_MS,
+      () => renderer,
+    );
+    await service.load();
+
+    service.receiveSnapshot(snapshot('/entertainment-art.jpg'));
+    await waitFor(() => renderer.renderedFrames.length === 1);
+    await new Promise(resolve => setTimeout(resolve, 1200));
+
+    assert.equal(renderer.renderedFrames.length, 1);
+  } finally {
+    await service?.pauseForExternalRenderer();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test('service reports incomplete entertainment metadata without selecting unrelated lights', async () => {
   const dir = await mkdtemp(path.join(tmpdir(), 'hue-service-'));
   try {
@@ -794,11 +827,20 @@ class FixedTransportHueAmbienceRenderer implements HueAmbienceRenderer {
   readonly renderedFrames: HueAmbienceFrame[] = [];
   readonly stoppedFrames: HueAmbienceFrame[] = [];
 
-  constructor(private readonly transport: 'clipFallback' | 'entertainmentStreaming') {}
+  constructor(
+    private readonly transport: 'clipFallback' | 'entertainmentStreaming',
+    private readonly nativeEffectActive = false,
+  ) {}
 
-  async render(frame: HueAmbienceFrame): Promise<{ transport: 'clipFallback' | 'entertainmentStreaming' }> {
+  async render(frame: HueAmbienceFrame): Promise<{
+    transport: 'clipFallback' | 'entertainmentStreaming';
+    nativeEffectActive?: boolean;
+  }> {
     this.renderedFrames.push(frame);
-    return { transport: this.transport };
+    return {
+      transport: this.transport,
+      ...(this.nativeEffectActive ? { nativeEffectActive: true } : {}),
+    };
   }
 
   async stop(frame: HueAmbienceFrame): Promise<void> {

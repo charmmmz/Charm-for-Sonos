@@ -4,7 +4,7 @@ import { HueClipClient } from './hueClient.js';
 import { buildHueAmbienceFrame, type HueAmbienceFrame } from './hueAmbienceFrames.js';
 import type { HueAmbienceConfigStore } from './hueConfigStore.js';
 import { paletteForSnapshot } from './hueAlbumArtPalette.js';
-import type { HueAmbienceRenderer } from './hueFrameRenderer.js';
+import type { HueAmbienceRenderer, HueAmbienceRenderResult } from './hueFrameRenderer.js';
 import { createHueEntertainmentStreamingRenderer, type HueEntertainmentControlClient } from './hueEntertainmentStream.js';
 import { resolveHueTargets } from './hueRenderer.js';
 import type {
@@ -239,8 +239,8 @@ export class HueAmbienceService {
     if (!this.isCurrentRun(runID)) return;
 
     let step = 0;
-    const apply = async (): Promise<boolean> => {
-      if (!this.isCurrentRun(runID)) return false;
+    const apply = async (): Promise<HueAmbienceRenderResult | null> => {
+      if (!this.isCurrentRun(runID)) return null;
       try {
         const frame = buildHueAmbienceFrame({
           targets,
@@ -259,22 +259,22 @@ export class HueAmbienceService {
         this.activeEntertainmentMetadataComplete = frame.metadataComplete;
         this.lastFrameAt = frame.createdAt.toISOString();
         step += 1;
-        return true;
+        return result;
       } catch (err) {
         this.lastError = err instanceof Error ? err.message : String(err);
         this.log.warn({ err, groupId: snapshot.groupId }, 'Hue ambience update failed');
-        return false;
+        return null;
       }
     };
 
-    const initialRenderSucceeded = await apply();
+    const initialRenderResult = await apply();
     if (!this.isCurrentRun(runID)) return;
-    if (!initialRenderSucceeded) {
+    if (!initialRenderResult) {
       await this.stopActive();
       return;
     }
 
-    if (config.motionStyle === 'flowing' && palette.length > 1) {
+    if (config.motionStyle === 'flowing' && palette.length > 1 && !initialRenderResult.nativeEffectActive) {
       this.activeTimer = setInterval(() => {
         void apply();
       }, intervalSeconds * 1000);
