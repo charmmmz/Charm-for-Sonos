@@ -16,7 +16,7 @@ import type { HueAmbienceRenderer } from './hueFrameRenderer.js';
 import type { Cs2GameStateSnapshot } from './cs2Types.js';
 import type { HueAmbienceRuntimeConfig, HueRGBColor } from './hueTypes.js';
 
-test('CS2 decision gives burning priority over simultaneous health damage', () => {
+test('CS2 decision ignores burning and damage as transient overlays', () => {
   const previous = snapshot({
     player: {
       state: { health: 80, burning: 0, flashed: 0 },
@@ -31,8 +31,8 @@ test('CS2 decision gives burning priority over simultaneous health damage', () =
   const decision = buildCs2LightingDecision(current, previous);
 
   assert.equal(decision.mode, 'competitive');
-  assert.equal(decision.reason, 'burning');
-  assert.deepEqual(decision.palette[0], { r: 1, g: 0.28, b: 0 });
+  assert.equal(decision.reason, 'ambient');
+  assert.deepEqual(decision.palette[0], { r: 0.05, g: 0.18, b: 0.44 });
 });
 
 test('CS2 decision keeps dead player on dim team ambience', () => {
@@ -80,7 +80,7 @@ test('CS2 decision keeps already-dead residual effects on dim team ambience', ()
   assert(color && maxChannel(color) < 0.2);
 });
 
-test('CS2 kill effect uses a short white burst', () => {
+test('CS2 kill effect uses a short red burst', () => {
   const previous = snapshot({
     player: { state: { round_kills: 0, health: 100, burning: 0, flashed: 0 } },
   });
@@ -93,8 +93,8 @@ test('CS2 kill effect uses a short white burst', () => {
   assert.equal(decision?.reason, 'kill');
   assert(decision.attackSeconds <= 0.08);
   assert(decision.holdSeconds <= 0.16);
-  assert(decision.fadeSeconds <= 0.25);
-  assert(decision.palette.every(color => color.r === color.g && color.g === color.b));
+  assert(decision.fadeSeconds <= 0.3);
+  assert(decision.palette.every(color => color.r > color.g && color.g >= color.b));
   assert.equal(decision.strength, 1);
 });
 
@@ -112,7 +112,7 @@ test('CS2 kill burst strength follows the current round kill count', () => {
   assert.equal(decision.strength, 3);
 });
 
-test('CS2 decision uses separate deathmatch damage strategy', () => {
+test('CS2 decision keeps deathmatch health damage on background lighting', () => {
   const previous = snapshot({
     map: { mode: 'Deathmatch' },
     player: { state: { health: 100, burning: 0, flashed: 0 } },
@@ -125,9 +125,8 @@ test('CS2 decision uses separate deathmatch damage strategy', () => {
   const decision = buildCs2LightingDecision(current, previous);
 
   assert.equal(decision.mode, 'deathmatch');
-  assert.equal(decision.reason, 'damage');
-  assert.equal(decision.transitionSeconds, 0.1);
-  assert.deepEqual(decision.palette[0], { r: 1, g: 0.05, b: 0.02 });
+  assert.equal(decision.reason, 'ambient');
+  assert.deepEqual(decision.palette[0], { r: 0.05, g: 0.18, b: 0.44 });
 });
 
 test('CS2 low health keeps CT background blue instead of becoming red ambience', () => {
@@ -805,7 +804,7 @@ test('CS2 lighting service keeps observer game state active with dim team ambien
   }
 });
 
-test('CS2 lighting service renders kill as a short burst and restores ambient quickly', async () => {
+test('CS2 lighting service flashes red once per current round kill and restores ambient', async () => {
   const dir = await mkdtemp(path.join(tmpdir(), 'cs2-lighting-'));
   try {
     const store = new HueAmbienceConfigStore(dir);
@@ -819,28 +818,30 @@ test('CS2 lighting service renders kill as a short burst and restores ambient qu
 
     await service.receive(snapshot({
       receivedAt: new Date(now),
-      player: { state: { round_kills: 0, health: 100, burning: 0, flashed: 0 } },
+      player: { state: { round_kills: 2, health: 100, burning: 0, flashed: 0 } },
     }));
     now += 10;
     await service.receive(snapshot({
       receivedAt: new Date(now),
-      player: { state: { round_kills: 1, health: 100, burning: 0, flashed: 0 } },
+      player: { state: { round_kills: 3, health: 100, burning: 0, flashed: 0 } },
     }));
-    now += 40;
-    await service.receive(snapshot({
-      receivedAt: new Date(now),
-      player: { state: { round_kills: 1, health: 100, burning: 0, flashed: 0 } },
-    }));
-    const burst = renderer.renderedFrames.at(-1)?.targets[0]?.lights[0]?.colors[0];
+
+    for (let index = 0; index < 18; index += 1) {
+      now += 40;
+      await service.receive(snapshot({
+        receivedAt: new Date(now),
+        player: { state: { round_kills: 3, health: 100, burning: 0, flashed: 0 } },
+      }));
+    }
 
     now += 360;
     await service.receive(snapshot({
       receivedAt: new Date(now),
-      player: { state: { round_kills: 1, health: 100, burning: 0, flashed: 0 } },
+      player: { state: { round_kills: 3, health: 100, burning: 0, flashed: 0 } },
     }));
     const restored = renderer.renderedFrames.at(-1)?.targets[0]?.lights[0]?.colors[0];
 
-    assert(burst && burst.r > 0.8 && burst.g > 0.8 && burst.b > 0.8);
+    assert.equal(countRedPeaks(renderer.renderedFrames), 3);
     assert.deepEqual(restored, { r: 0.05, g: 0.18, b: 0.44 });
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -1065,7 +1066,7 @@ test('CS2 death effect blooms red, fades to black, then restores dim team ambien
   }
 });
 
-test('CS2 damage overlay restores to low-health CT background', async () => {
+test('CS2 health damage goes directly to low-health CT background', async () => {
   const dir = await mkdtemp(path.join(tmpdir(), 'cs2-lighting-'));
   try {
     const store = new HueAmbienceConfigStore(dir);
@@ -1406,6 +1407,18 @@ function snapshot(overrides: Partial<Cs2GameStateSnapshot> = {}): Cs2GameStateSn
 
 function maxChannel(color: HueRGBColor): number {
   return Math.max(color.r, color.g, color.b);
+}
+
+function countRedPeaks(frames: HueAmbienceFrame[]): number {
+  let count = 0;
+  let wasRed = false;
+  for (const frame of frames) {
+    const color = frame.targets[0]?.lights[0]?.colors[0];
+    const isRed = color !== undefined && color.r > 0.78 && color.g < 0.22 && color.b < 0.18;
+    if (isRed && !wasRed) count += 1;
+    wasRed = isRed;
+  }
+  return count;
 }
 
 class RecordingHueAmbienceRenderer implements HueAmbienceRenderer {

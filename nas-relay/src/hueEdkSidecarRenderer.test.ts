@@ -177,7 +177,7 @@ test('Music Ambience renderer factory falls back directly to CLIP when sidecar s
   assert.deepEqual(updates.map(update => update.id), ['light-1']);
 });
 
-test('Hue EDK sidecar renderer maps CS2 flash and kill frames to spatial effect endpoints', async () => {
+test('Hue EDK sidecar renderer maps CS2 flash to spatial effect and lets kill frames stream as ambience', async () => {
   const { createHueEdkSidecarRenderer } = await loadSidecarRendererModule();
   const recorder = recordingFetch();
   const renderer = createHueEdkSidecarRenderer(config, {
@@ -192,7 +192,7 @@ test('Hue EDK sidecar renderer maps CS2 flash and kill frames to spatial effect 
     fadeSeconds: 0.7,
     transitionSeconds: 0.08,
   }));
-  await renderer.render(cs2Frame('kill', [{ r: 1, g: 0.72, b: 0.12 }], {
+  await renderer.render(cs2Frame('kill', [{ r: 1, g: 0.04, b: 0.02 }], {
     strength: 3,
     attackSeconds: 0.05,
     holdSeconds: 0.1,
@@ -204,7 +204,7 @@ test('Hue EDK sidecar renderer maps CS2 flash and kill frames to spatial effect 
     '/configure',
     '/session/start',
     '/effect/sphere',
-    '/effect/kill',
+    '/ambient/team',
   ]);
   assert.deepEqual(recorder.calls[2]?.body, {
     kind: 'flash',
@@ -221,14 +221,9 @@ test('Hue EDK sidecar renderer maps CS2 flash and kill frames to spatial effect 
     z: 1,
     radius: 3.1,
   });
-  assert.deepEqual(recorder.calls[3]?.body, {
-    r: 1,
-    g: 1,
-    b: 1,
-    intensity: 1,
-    durationMs: 210,
-    radius: 2.5,
-  });
+  assert.deepEqual((recorder.calls[3]?.body as Record<string, unknown>).palette, [
+    { r: 1, g: 0.04, b: 0.02 },
+  ]);
 });
 
 test('Hue EDK sidecar renderer lets CS2 death preset drive ambient frames', async () => {
@@ -258,7 +253,7 @@ test('Hue EDK sidecar renderer lets CS2 death preset drive ambient frames', asyn
   ]);
 });
 
-test('Hue EDK sidecar renderer maps CS2 damage and burning states to native pulse and sphere effects', async () => {
+test('Hue EDK sidecar renderer lets legacy CS2 damage and burning frames stream as ambience', async () => {
   const { createHueEdkSidecarRenderer } = await loadSidecarRendererModule();
   const recorder = recordingFetch();
   const renderer = createHueEdkSidecarRenderer(config, {
@@ -288,36 +283,20 @@ test('Hue EDK sidecar renderer maps CS2 damage and burning states to native puls
     transitionSeconds: 0.12,
   }));
 
-  assert.equal(result.nativeEffectActive, true);
+  assert.equal(result.nativeEffectActive, undefined);
   assert.deepEqual(recorder.calls.map(call => call.path), [
     '/configure',
     '/session/start',
-    '/effect/pulse',
-    '/effect/sphere',
+    '/ambient/team',
+    '/ambient/team',
+    '/ambient/team',
   ]);
-  assert.deepEqual(recorder.calls[2]?.body, {
-    r: 1,
-    g: 0.05,
-    b: 0.02,
-    intensity: 1,
-    attackMs: 80,
-    holdMs: 400,
-    fadeMs: 550,
-  });
-  assert.deepEqual(recorder.calls[3]?.body, {
-    kind: 'burning',
-    r: 1,
-    g: 0.28,
-    b: 0,
-    intensity: 1,
-    attackMs: 80,
-    holdMs: 200,
-    fadeMs: 400,
-    x: 0,
-    y: 0,
-    z: -0.82,
-    radius: 1.35,
-  });
+  assert.deepEqual((recorder.calls[2]?.body as Record<string, unknown>).palette, [
+    { r: 1, g: 0.05, b: 0.02 },
+  ]);
+  assert.deepEqual((recorder.calls[4]?.body as Record<string, unknown>).palette, [
+    { r: 1, g: 0.28, b: 0 },
+  ]);
 });
 
 test('Hue EDK sidecar renderer maps planted C4 and round freeze to iterator effects', async () => {

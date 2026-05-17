@@ -914,7 +914,6 @@ function momentaryDecisionForSnapshot(
 ): Cs2LightingDecision | null {
   const mode = gameMode(snapshot);
   const state = snapshot.player?.state;
-  const health = clamp01((state?.health ?? 100) / 100);
   const activity = snapshot.player?.activity?.toLowerCase();
   const isDead = (state?.health ?? 100) <= 0;
   const observer = isObserverActivity(activity) || isMenuActivity(activity);
@@ -961,40 +960,16 @@ function momentaryDecisionForSnapshot(
     };
   }
 
-  if ((state?.burning ?? 0) > 0) {
-    return {
-      mode,
-      reason: 'burning',
-      palette: palettes.burning,
-      transitionSeconds: mode === 'deathmatch' ? 0.08 : 0.12,
-      attackSeconds: mode === 'deathmatch' ? 0.06 : 0.08,
-      holdSeconds: 0.2,
-      fadeSeconds: 0.4,
-    };
-  }
-
-  if (healthDropped(snapshot, previous)) {
-    return {
-      mode,
-      reason: 'damage',
-      palette: palettes.damage,
-      transitionSeconds: mode === 'deathmatch' ? 0.1 : 0.14,
-      attackSeconds: mode === 'deathmatch' ? 0.06 : 0.08,
-      holdSeconds: mode === 'deathmatch' ? 0.28 : 0.4,
-      fadeSeconds: mode === 'deathmatch' ? 0.35 : 0.55,
-    };
-  }
-
   if (killsIncreased(snapshot, previous)) {
     const killCount = currentKillCount(snapshot) ?? 1;
     return {
       mode,
       reason: 'kill',
       palette: killPaletteForStrength(killCount),
-      transitionSeconds: mode === 'deathmatch' ? 0.06 : 0.08,
-      attackSeconds: mode === 'deathmatch' ? 0.04 : 0.05,
-      holdSeconds: mode === 'deathmatch' ? 0.08 : 0.1,
-      fadeSeconds: mode === 'deathmatch' ? 0.16 : 0.2,
+      transitionSeconds: 0.04,
+      attackSeconds: 0.035,
+      holdSeconds: 0.045,
+      fadeSeconds: 0.22,
       strength: Math.min(5, Math.max(1, killCount)),
       effectKey: `${snapshot.providerSteamId}:kill:${killCount}`,
     };
@@ -1150,15 +1125,6 @@ function gameMode(snapshot: Cs2GameStateSnapshot): Exclude<Cs2LightingMode, 'idl
   const mode = snapshot.map?.mode?.toLowerCase() ?? '';
   if (mode.includes('deathmatch')) return 'deathmatch';
   return 'competitive';
-}
-
-function healthDropped(snapshot: Cs2GameStateSnapshot, previous?: Cs2GameStateSnapshot): boolean {
-  const currentHealth = snapshot.player?.state?.health;
-  const previousHealth = previous?.player?.state?.health;
-  return Number.isFinite(currentHealth)
-    && Number.isFinite(previousHealth)
-    && (previousHealth as number) > (currentHealth as number)
-    && (currentHealth as number) > 0;
 }
 
 function snapshotFlashed(snapshot: Cs2GameStateSnapshot): boolean {
@@ -1358,9 +1324,8 @@ function effectProfileForDecision(decision: Cs2LightingDecision): string {
     case 'bombPlanted':
       return 'c4_blink';
     case 'burning':
-      return 'burning_sphere';
     case 'damage':
-      return 'damage_pulse';
+      return 'disabled_transient';
     case 'death':
       return 'death_fade';
     case 'flash':
@@ -1384,22 +1349,16 @@ function effectLayerForDecision(decision: Cs2LightingDecision): 'background' | '
 
 function sidecarCommandForDecision(
   decision: Cs2LightingDecision,
-): 'ambient/team' | 'effect/kill' | 'effect/pulse' | 'effect/sphere' | 'effect/iterator' | 'effect/c4' | 'effect/explosion' {
+): 'ambient/team' | 'effect/sphere' | 'effect/iterator' | 'effect/c4' | 'effect/explosion' {
   switch (decision.reason) {
     case 'bombExploded':
       return 'effect/explosion';
     case 'bombPlanted':
       return 'effect/c4';
-    case 'burning':
-      return 'effect/sphere';
     case 'roundFreeze':
       return 'effect/iterator';
-    case 'damage':
-      return 'effect/pulse';
     case 'flash':
       return 'effect/sphere';
-    case 'kill':
-      return 'effect/kill';
     default:
       return 'ambient/team';
   }
@@ -1533,10 +1492,7 @@ function firstFrameLeadMs(decision: Cs2LightingDecision): number {
     case 'flash':
       return 45;
     case 'kill':
-      return 25;
-    case 'damage':
-    case 'burning':
-      return 30;
+      return 20;
     case 'death':
       return 45;
     default:
@@ -1661,11 +1617,7 @@ function overlayPresetDurationMs(decision: Cs2LightingDecision): number {
     case 'flash':
       return 900;
     case 'kill':
-      return 220;
-    case 'damage':
-      return 620;
-    case 'burning':
-      return 820;
+      return killOverlayDurationMs(decision.strength);
     case 'death':
       return 1450;
     default:
@@ -1687,28 +1639,7 @@ function overlayPresetKeyframes(
         { atMs: 900, palette: fallback.palette, ease: 'out' },
       ];
     case 'kill':
-      return [
-        { atMs: 0, palette: start.palette, ease: 'smooth' },
-        { atMs: 35, palette: killPaletteForStrength(effect.strength), ease: 'out' },
-        { atMs: 95, palette: dim(killPaletteForStrength(effect.strength), 0.72), ease: 'smooth' },
-        { atMs: 220, palette: fallback.palette, ease: 'out' },
-      ];
-    case 'damage':
-      return [
-        { atMs: 0, palette: start.palette, ease: 'smooth' },
-        { atMs: 70, palette: palettes.damage, ease: 'out' },
-        { atMs: 180, palette: dim(palettes.damage, 0.45), ease: 'smooth' },
-        { atMs: 620, palette: fallback.palette, ease: 'out' },
-      ];
-    case 'burning':
-      return [
-        { atMs: 0, palette: start.palette, ease: 'smooth' },
-        { atMs: 60, palette: palettes.burning, ease: 'out' },
-        { atMs: 180, palette: dim(palettes.burning, 0.7), ease: 'linear' },
-        { atMs: 320, palette: palettes.burning.slice().reverse(), ease: 'smooth' },
-        { atMs: 520, palette: dim(palettes.burning, 0.45), ease: 'linear' },
-        { atMs: 820, palette: fallback.palette, ease: 'out' },
-      ];
+      return killOverlayKeyframes(effect, start, fallback);
     case 'death':
       return [
         { atMs: 0, palette: start.palette, ease: 'smooth' },
@@ -1725,26 +1656,63 @@ function overlayPresetKeyframes(
   }
 }
 
+function killOverlayKeyframes(
+  effect: Cs2LightingDecision,
+  start: Cs2LightingDecision,
+  fallback: Cs2LightingDecision,
+): Cs2PresetKeyframe[] {
+  const count = killFlashCount(effect.strength);
+  const flashPalette = killPaletteForStrength(effect.strength);
+  const dimPalette = dim(fallback.palette, 0.34);
+  const keyframes: Cs2PresetKeyframe[] = [
+    { atMs: 0, palette: start.palette, ease: 'smooth' },
+  ];
+
+  for (let index = 0; index < count; index += 1) {
+    const base = index * 120;
+    keyframes.push(
+      { atMs: base + 26, palette: flashPalette, ease: 'out' },
+      { atMs: base + 58, palette: flashPalette, ease: 'linear' },
+      { atMs: base + 104, palette: dimPalette, ease: 'smooth' },
+    );
+  }
+
+  keyframes.push({
+    atMs: killOverlayDurationMs(effect.strength),
+    palette: fallback.palette,
+    ease: 'out',
+  });
+  return keyframes;
+}
+
+function killOverlayDurationMs(strength: number | undefined): number {
+  return killFlashCount(strength) * 120 + 180;
+}
+
+function killFlashCount(strength: number | undefined): number {
+  return Math.min(5, Math.max(1, Math.round(strength ?? 1)));
+}
+
 function killPaletteForStrength(strength: number | undefined): HueRGBColor[] {
   const tier = Math.min(3, Math.max(1, Math.round(strength ?? 1)));
   if (tier >= 3) {
     return [
-      { r: 1, g: 1, b: 1 },
-      { r: 0.92, g: 0.92, b: 0.92 },
-      { r: 0.7, g: 0.7, b: 0.7 },
+      { r: 1, g: 0.02, b: 0.01 },
+      { r: 0.9, g: 0, b: 0 },
+      { r: 0.58, g: 0, b: 0 },
     ];
   }
   if (tier === 2) {
     return [
-      { r: 1, g: 1, b: 1 },
-      { r: 0.86, g: 0.86, b: 0.86 },
-      { r: 0.62, g: 0.62, b: 0.62 },
+      { r: 1, g: 0.04, b: 0.02 },
+      { r: 0.82, g: 0, b: 0 },
+      { r: 0.48, g: 0, b: 0 },
     ];
   }
   return [
-    { r: 1, g: 1, b: 1 },
-    { r: 0.82, g: 0.82, b: 0.82 },
-    { r: 0.52, g: 0.52, b: 0.52 },
+    { r: 1, g: 0.06, b: 0.03 },
+    { r: 0.72, g: 0, b: 0 },
+    { r: 0.36, g: 0, b: 0 },
   ];
 }
 
