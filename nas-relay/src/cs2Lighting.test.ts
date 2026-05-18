@@ -156,6 +156,47 @@ test('CS2 planted bomb remains the background priority over low health', () => {
   assert.equal(decision?.reason, 'bombPlanted');
 });
 
+test('CS2 planted bomb ignores spectating death but lets own death overlay', () => {
+  const plantedAt = new Date('2026-05-12T09:30:00.000Z');
+  const previous = snapshot({
+    receivedAt: plantedAt,
+    round: { bomb: 'planted' },
+    player: {
+      team: 'CT',
+      activity: 'Playing',
+      state: { health: 100, burning: 0, flashed: 0 },
+    },
+  });
+  const current = snapshot({
+    receivedAt: new Date(plantedAt.getTime() + 4000),
+    round: { bomb: 'planted' },
+    player: {
+      team: 'CT',
+      activity: 'Spectating',
+      state: { health: 0, burning: 0, flashed: 0 },
+    },
+  });
+
+  const decision = buildCs2LightingDecision(current, previous, {
+    bombPlantedAt: plantedAt.getTime(),
+    nowMs: plantedAt.getTime() + 4000,
+  });
+  const ownDeathDecision = buildCs2LightingDecision({
+    ...current,
+    player: {
+      ...current.player,
+      activity: 'Playing',
+      state: { health: 0, burning: 0, flashed: 0 },
+    },
+  }, previous, {
+    bombPlantedAt: plantedAt.getTime(),
+    nowMs: plantedAt.getTime() + 4000,
+  });
+
+  assert.equal(decision?.reason, 'bombPlanted');
+  assert.equal(ownDeathDecision?.reason, 'death');
+});
+
 test('CS2 planted bomb cadence follows the classic 40 second C4 beep curve', () => {
   assert.equal(c4BlinkIntervalMs(40_000), 1_000);
   assert.equal(c4BlinkIntervalMs(30_000), 775);
@@ -1061,6 +1102,52 @@ test('CS2 death effect blooms red, fades to black, then restores dim team ambien
     assert(blackout && maxChannel(blackout) < 0.03);
     assert(dimTeam && dimTeam.b > dimTeam.r);
     assert(dimTeam && maxChannel(dimTeam) > 0.05 && maxChannel(dimTeam) < 0.2);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('CS2 own death overlays planted bomb and then restores C4 blinking', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'cs2-lighting-'));
+  try {
+    const store = new HueAmbienceConfigStore(dir);
+    await store.save(config);
+    const renderer = new RecordingHueAmbienceRenderer();
+    let now = new Date('2026-05-12T09:30:00.000Z').getTime();
+    const service = new Cs2LightingService(store, () => renderer, {
+      minRenderIntervalMs: 0,
+      now: () => now,
+    });
+
+    await service.receive(snapshot({
+      receivedAt: new Date(now),
+      round: { bomb: 'planted' },
+      player: { team: 'T', activity: 'Playing', state: { health: 100, burning: 0, flashed: 0 } },
+    }));
+    const c4BeforeDeath = renderer.renderedFrames.at(-1);
+
+    now += 10;
+    await service.receive(snapshot({
+      receivedAt: new Date(now),
+      round: { bomb: 'planted' },
+      player: { team: 'T', activity: 'Playing', state: { health: 0, burning: 0, flashed: 0 } },
+    }));
+    const redBloom = renderer.renderedFrames.at(-1)?.targets[0]?.lights[0]?.colors[0];
+
+    now += 1520;
+    await service.receive(snapshot({
+      receivedAt: new Date(now),
+      round: { bomb: 'planted' },
+      player: { team: 'T', activity: 'Playing', state: { health: 0, burning: 0, flashed: 0 } },
+    }));
+    const restoredFrame = renderer.renderedFrames.at(-1);
+    const restored = restoredFrame?.targets[0]?.lights[0]?.colors[0];
+
+    assert.equal(c4BeforeDeath?.effect?.reason, 'bombPlanted');
+    assert(redBloom && redBloom.r > 0.9);
+    assert(redBloom && redBloom.g < 0.08 && redBloom.b < 0.08);
+    assert.equal(restoredFrame?.effect?.reason, 'bombPlanted');
+    assert(restored && restored.r > restored.g && restored.g > restored.b);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

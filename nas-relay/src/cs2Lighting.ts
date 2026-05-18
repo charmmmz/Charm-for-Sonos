@@ -988,17 +988,18 @@ function backgroundDecisionForSnapshot(
   const activity = snapshot.player?.activity?.toLowerCase();
   const isDead = (state?.health ?? 100) <= 0;
   if (isMenuActivity(activity)) return null;
-  if (isObserverActivity(activity) || isDead) {
-    return observerAmbientDecision(snapshot);
-  }
 
   const phase = roundPhase(snapshot);
   if (phase === 'over') {
     return roundBackgroundDecision(snapshot, 'roundOver', 0.32, 0.35);
   }
 
-  if (mode === 'competitive' && snapshot.round?.bomb?.toLowerCase() === 'planted') {
+  if (mode === 'competitive' && isPlantedBombActive(snapshot)) {
     return bombPlantedDecision(mode, context);
+  }
+
+  if (isObserverActivity(activity) || isDead) {
+    return observerAmbientDecision(snapshot);
   }
 
   if (phase === 'freezetime') {
@@ -1129,6 +1130,10 @@ function gameMode(snapshot: Cs2GameStateSnapshot): Exclude<Cs2LightingMode, 'idl
 
 function snapshotFlashed(snapshot: Cs2GameStateSnapshot): boolean {
   return (snapshot.player?.state?.flashed ?? 0) > 0;
+}
+
+function isPlantedBombActive(snapshot: Cs2GameStateSnapshot): boolean {
+  return snapshot.round?.bomb?.toLowerCase() === 'planted';
 }
 
 function killsIncreased(snapshot: Cs2GameStateSnapshot, previous?: Cs2GameStateSnapshot): boolean {
@@ -1469,6 +1474,9 @@ function baseDecisionForHeldEffect(
   context: Cs2LightingDecisionContext,
 ): Cs2LightingDecision {
   if (effect.reason === 'death') {
+    if (gameMode(snapshot) === 'competitive' && isPlantedBombActive(snapshot)) {
+      return bombPlantedDecision('competitive', context);
+    }
     return deathFallbackDecision(snapshot);
   }
 
