@@ -75,6 +75,28 @@ enum AlbumPaletteExtractor {
         return palette
     }
 
+    static func motionPalette(from palette: [HueRGBColor]) -> [HueRGBColor] {
+        guard palette.count == 1, let base = palette.first else {
+            return palette
+        }
+
+        let hsl = rgbToHSL(base)
+        if hsl.s < 0.12 {
+            return [
+                base,
+                hslToRGB(h: hsl.h, s: 0, l: clamp(hsl.l + 0.16)),
+                hslToRGB(h: hsl.h, s: 0, l: clamp(hsl.l - 0.12))
+            ]
+        }
+
+        return [
+            base,
+            hslToRGB(h: hsl.h - 0.025, s: clamp(hsl.s * 0.92), l: clamp(hsl.l + 0.08)),
+            hslToRGB(h: hsl.h + 0.025, s: clamp(hsl.s * 0.90), l: clamp(hsl.l - 0.07)),
+            hslToRGB(h: hsl.h + 0.05, s: clamp(hsl.s * 0.82), l: clamp(hsl.l + 0.03))
+        ]
+    }
+
     private static func fallbackColor(from colors: [HueRGBColor]) -> HueRGBColor? {
         guard !colors.isEmpty else { return nil }
 
@@ -105,6 +127,68 @@ enum AlbumPaletteExtractor {
             g: min(max(color.g * scale, 0), 1),
             b: min(max(color.b * scale, 0), 1)
         )
+    }
+
+    private static func rgbToHSL(_ color: HueRGBColor) -> (h: Double, s: Double, l: Double) {
+        let r = clamp(color.r)
+        let g = clamp(color.g)
+        let b = clamp(color.b)
+        let maxValue = max(r, g, b)
+        let minValue = min(r, g, b)
+        let lightness = (maxValue + minValue) / 2
+
+        guard maxValue != minValue else {
+            return (0, 0, lightness)
+        }
+
+        let delta = maxValue - minValue
+        let saturation: Double
+        if lightness > 0.5 {
+            saturation = delta / (2 - maxValue - minValue)
+        } else {
+            saturation = delta / (maxValue + minValue)
+        }
+
+        let hue: Double
+        if maxValue == r {
+            hue = ((g - b) / delta + (g < b ? 6 : 0)) / 6
+        } else if maxValue == g {
+            hue = ((b - r) / delta + 2) / 6
+        } else {
+            hue = ((r - g) / delta + 4) / 6
+        }
+
+        return (hue, saturation, lightness)
+    }
+
+    private static func hslToRGB(h: Double, s: Double, l: Double) -> HueRGBColor {
+        let hue = positiveModulo(h, 1)
+        let q = l < 0.5 ? l * (1 + s) : l + s - l * s
+        let p = 2 * l - q
+        return HueRGBColor(
+            r: hueToRGB(p: p, q: q, t: hue + 1 / 3),
+            g: hueToRGB(p: p, q: q, t: hue),
+            b: hueToRGB(p: p, q: q, t: hue - 1 / 3)
+        )
+    }
+
+    private static func hueToRGB(p: Double, q: Double, t: Double) -> Double {
+        var value = t
+        if value < 0 { value += 1 }
+        if value > 1 { value -= 1 }
+        if value < 1 / 6 { return p + (q - p) * 6 * value }
+        if value < 1 / 2 { return q }
+        if value < 2 / 3 { return p + (q - p) * (2 / 3 - value) * 6 }
+        return p
+    }
+
+    private static func positiveModulo(_ value: Double, _ divisor: Double) -> Double {
+        let remainder = value.truncatingRemainder(dividingBy: divisor)
+        return remainder >= 0 ? remainder : remainder + divisor
+    }
+
+    private static func clamp(_ value: Double) -> Double {
+        min(max(value, 0), 1)
     }
 }
 

@@ -86,17 +86,32 @@ extension UIImage {
 
         var bestColor: (r: Double, g: Double, b: Double) = (0.6, 0.6, 0.6)
         var bestScore: Double = -1
+        var sampledR: Double = 0
+        var sampledG: Double = 0
+        var sampledB: Double = 0
+        var sampledCount: Double = 0
+        var colorfulCount: Double = 0
+        var saturationTotal: Double = 0
 
         for i in stride(from: 0, to: raw.count, by: 4) {
             let r = Double(raw[i]) / 255.0
             let g = Double(raw[i + 1]) / 255.0
             let b = Double(raw[i + 2]) / 255.0
 
-            let maxC = max(r, g, b)
-            let minC = min(r, g, b)
-            let delta = maxC - minC
-            let lightness = (maxC + minC) / 2.0
-            let saturation = delta < 0.001 ? 0.0 : delta / (1.0 - abs(2.0 * lightness - 1.0))
+            let hsl = hslComponents(r, g, b)
+            let lightness = hsl.l
+            let saturation = hsl.s
+
+            if lightness >= 0.08 && lightness <= 0.94 {
+                sampledR += r
+                sampledG += g
+                sampledB += b
+                sampledCount += 1
+                saturationTotal += saturation
+                if saturation >= 0.18 {
+                    colorfulCount += 1
+                }
+            }
 
             // Strongly prefer saturated colors; target lightness around 0.6 for dark-bg legibility.
             // Penalise near-black and near-white pixels.
@@ -111,13 +126,48 @@ extension UIImage {
             }
         }
 
+        if sampledCount > 0 {
+            let averageSaturation = saturationTotal / sampledCount
+            let colorfulFraction = colorfulCount / sampledCount
+            if averageSaturation < 0.10 && colorfulFraction < 0.05 {
+                return neutralForDarkBackground(
+                    sampledR / sampledCount,
+                    sampledG / sampledCount,
+                    sampledB / sampledCount
+                )
+            }
+        }
+
         // Post-process: convert to HSL, clamp to a readable range, convert back.
         return boostForDarkBackground(bestColor.r, bestColor.g, bestColor.b)
     }
 
-    /// Converts RGB → HSL, enforces minimum lightness (0.60) and saturation (0.55),
-    /// then converts back so the result is always legible on a dark background.
+    /// Converts RGB to HSL, preserving neutral covers as neutral while boosting
+    /// genuinely colorful covers so they stay legible on a dark background.
     private func boostForDarkBackground(_ r: Double, _ g: Double, _ b: Double) -> (Double, Double, Double) {
+        let hsl = hslComponents(r, g, b)
+        guard hsl.s >= 0.12 else {
+            return neutralForDarkBackground(lightness: hsl.l)
+        }
+
+        // Enforce readable ranges for dark-background display
+        let newL = max(hsl.l, 0.60)       // boost dark colours up to 60 % lightness
+        let newS = max(hsl.s, 0.55)       // ensure enough colour so it doesn't look grey
+        let clampedL = min(newL, 0.88)    // don't blow out to near-white
+
+        return hslToRgb(hsl.h, min(newS, 1.0), clampedL)
+    }
+
+    private func neutralForDarkBackground(_ r: Double, _ g: Double, _ b: Double) -> (Double, Double, Double) {
+        neutralForDarkBackground(lightness: hslComponents(r, g, b).l)
+    }
+
+    private func neutralForDarkBackground(lightness: Double) -> (Double, Double, Double) {
+        let component = min(max(lightness, 0.48), 0.74)
+        return (component, component, component)
+    }
+
+    private func hslComponents(_ r: Double, _ g: Double, _ b: Double) -> (h: Double, s: Double, l: Double) {
         let maxC = max(r, g, b)
         let minC = min(r, g, b)
         let delta = maxC - minC
@@ -136,12 +186,7 @@ extension UIImage {
             if h < 0 { h += 1 }
         }
 
-        // Enforce readable ranges for dark-background display
-        let newL = max(l, 0.60)       // boost dark colours up to 60 % lightness
-        let newS = max(s, 0.55)       // ensure enough colour so it doesn't look grey
-        let clampedL = min(newL, 0.88) // don't blow out to near-white
-
-        return hslToRgb(h, newS > 0 ? min(newS, 1.0) : s, clampedL)
+        return (h, s, l)
     }
 
     private func hslToRgb(_ h: Double, _ s: Double, _ l: Double) -> (Double, Double, Double) {

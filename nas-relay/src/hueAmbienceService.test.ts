@@ -417,6 +417,42 @@ test('service reports active Hue Entertainment streaming when renderer uses DTLS
   }
 });
 
+test('service keeps flowing Entertainment streaming alive for single-color album palettes', async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'hue-service-'));
+  let service: HueAmbienceService | null = null;
+  try {
+    const store = new HueAmbienceConfigStore(dir);
+    await store.save({
+      ...entertainmentConfig(),
+      motionStyle: 'flowing',
+      flowIntervalSeconds: 2,
+      streamingClientKey: '00112233445566778899aabbccddeeff',
+    });
+    const renderer = new FixedTransportHueAmbienceRenderer('entertainmentStreaming');
+    service = new HueAmbienceService(
+      store,
+      pino({ enabled: false }),
+      () => new RecordingHueLightClient(),
+      () => [{ r: 0.82, g: 0.08, b: 0.12 }],
+      DEFAULT_STOP_GRACE_MS,
+      () => renderer,
+    );
+    await service.load();
+
+    service.receiveSnapshot(snapshot('/single-color-art.jpg'));
+    await waitFor(() => renderer.renderedFrames.length >= 3);
+
+    assert.equal(renderer.renderedFrames[0]!.targets[0]!.lights[0]!.colors.length > 1, true);
+    assert.notDeepEqual(
+      renderer.renderedFrames[0]!.targets[0]!.lights.map(light => light.colors[0]),
+      renderer.renderedFrames[2]!.targets[0]!.lights.map(light => light.colors[0]),
+    );
+  } finally {
+    await service?.pauseForExternalRenderer();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test('service keeps the active Entertainment renderer alive across track changes in the same area', async () => {
   const dir = await mkdtemp(path.join(tmpdir(), 'hue-service-'));
   try {
