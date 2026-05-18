@@ -334,6 +334,43 @@ final class MusicAmbienceManagerTests: XCTestCase {
         manager.receive(snapshot: snapshot)
     }
 
+    func testFlowingMotionReappliesSingleColorArtworkWithMotionPalette() async {
+        let store = makeStore()
+        store.isEnabled = true
+        store.motionStyle = .flowing
+        store.bridge = HueBridgeInfo(id: "bridge-1", ipAddress: "192.168.1.20", name: "Home Hue")
+        store.upsertMapping(HueSonosMapping(
+            sonosID: "living",
+            sonosName: "Living",
+            preferredTarget: .room("room-1")
+        ))
+
+        let firstApply = expectation(description: "first single color flow render")
+        let secondApply = expectation(description: "second single color flow render")
+        let renderer = RecordingAmbienceRendering(
+            applyExpectation: firstApply,
+            secondApplyExpectation: secondApply
+        )
+        let manager = MusicAmbienceManager(
+            store: store,
+            renderer: renderer,
+            targetResolver: StaticHueTargetResolving(targets: [makeTarget()]),
+            flowIntervalSeconds: 0.1
+        )
+        var snapshot = makePlayingSnapshot(trackTitle: "Single Color Flow Song")
+        snapshot.albumArtImage = makeRedImageData()
+
+        manager.receive(snapshot: snapshot)
+
+        await fulfillment(of: [firstApply, secondApply], timeout: 1)
+        XCTAssertGreaterThanOrEqual(renderer.applyCount, 2)
+        XCTAssertGreaterThanOrEqual(renderer.appliedPalettes.first?.count ?? 0, 3)
+        XCTAssertNotEqual(renderer.appliedPalettes.first, renderer.appliedPalettes.dropFirst().first)
+
+        snapshot.isPlaying = false
+        manager.receive(snapshot: snapshot)
+    }
+
     func testReceiveStopsActiveAmbienceWhenPlaybackStops() async {
         let store = makeStore()
         store.isEnabled = true

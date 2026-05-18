@@ -45,18 +45,89 @@ export function brightness(color: HueRGBColor): number {
 
 export function rotatePalette(palette: HueRGBColor[], offset: number): HueRGBColor[] {
   if (palette.length === 0) return [];
-  const shift = offset % palette.length;
-  return palette.slice(shift).concat(palette.slice(0, shift));
+  return palette.map((_, index) => samplePalette(palette, offset + index));
+}
+
+export function samplePalette(palette: HueRGBColor[], offset: number): HueRGBColor {
+  if (palette.length === 0) return { r: 0, g: 0, b: 0 };
+  if (palette.length === 1) return palette[0]!;
+
+  const normalized = positiveModulo(offset, palette.length);
+  const lowerIndex = Math.floor(normalized);
+  const upperIndex = (lowerIndex + 1) % palette.length;
+  const amount = normalized - lowerIndex;
+  return mixRgb(palette[lowerIndex]!, palette[upperIndex]!, amount);
+}
+
+export function expandPaletteForMotion(palette: HueRGBColor[]): HueRGBColor[] {
+  if (palette.length !== 1) return palette;
+
+  const base = palette[0]!;
+  const hsl = rgbToHsl(base);
+  if (hsl.s < 0.12) {
+    return [
+      base,
+      hslToRgb(hsl.h, 0, clamp(hsl.l + 0.16)),
+      hslToRgb(hsl.h, 0, clamp(hsl.l - 0.12)),
+    ];
+  }
+
+  return [
+    base,
+    hslToRgb(hsl.h - 0.025, clamp(hsl.s * 0.92), clamp(hsl.l + 0.08)),
+    hslToRgb(hsl.h + 0.025, clamp(hsl.s * 0.9), clamp(hsl.l - 0.07)),
+    hslToRgb(hsl.h + 0.05, clamp(hsl.s * 0.82), clamp(hsl.l + 0.03)),
+  ];
+}
+
+function positiveModulo(value: number, length: number): number {
+  return ((value % length) + length) % length;
+}
+
+function mixRgb(a: HueRGBColor, b: HueRGBColor, amount: number): HueRGBColor {
+  const t = clamp(amount);
+  return {
+    r: clamp(a.r + (b.r - a.r) * t),
+    g: clamp(a.g + (b.g - a.g) * t),
+    b: clamp(a.b + (b.b - a.b) * t),
+  };
 }
 
 function hslToRgb(h: number, s: number, l: number): HueRGBColor {
+  const normalizedHue = positiveModulo(h, 1);
   const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
   const p = 2 * l - q;
   return {
-    r: hueToRgb(p, q, h + 1 / 3),
-    g: hueToRgb(p, q, h),
-    b: hueToRgb(p, q, h - 1 / 3),
+    r: hueToRgb(p, q, normalizedHue + 1 / 3),
+    g: hueToRgb(p, q, normalizedHue),
+    b: hueToRgb(p, q, normalizedHue - 1 / 3),
   };
+}
+
+function rgbToHsl(color: HueRGBColor): { h: number; s: number; l: number } {
+  const r = clamp(color.r);
+  const g = clamp(color.g);
+  const b = clamp(color.b);
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const l = (max + min) / 2;
+
+  if (max === min) {
+    return { h: 0, s: 0, l };
+  }
+
+  const delta = max - min;
+  const s = l > 0.5 ? delta / (2 - max - min) : delta / (max + min);
+  let h = 0;
+  if (max === r) {
+    h = (g - b) / delta + (g < b ? 6 : 0);
+  } else if (max === g) {
+    h = (b - r) / delta + 2;
+  } else {
+    h = (r - g) / delta + 4;
+  }
+
+  return { h: h / 6, s, l };
 }
 
 function hueToRgb(p: number, q: number, t: number): number {

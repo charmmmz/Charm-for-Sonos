@@ -71,6 +71,23 @@ final class AlbumPaletteExtractorTests: XCTestCase {
         XCTAssertLessThanOrEqual(neutral.r, 0.8)
     }
 
+    func testMotionPaletteExpandsSingleSaturatedColorWithinSameHueFamily() {
+        let palette = AlbumPaletteExtractor.motionPalette(from: [HueRGBColor(r: 0.82, g: 0.08, b: 0.12)])
+
+        XCTAssertGreaterThanOrEqual(palette.count, 3)
+        XCTAssertEqual(palette.first, HueRGBColor(r: 0.82, g: 0.08, b: 0.12))
+        XCTAssertTrue(palette.allSatisfy { $0.r > $0.g && $0.r > $0.b })
+    }
+
+    func testMotionPaletteKeepsNeutralSingleColorNeutral() {
+        let palette = AlbumPaletteExtractor.motionPalette(from: [HueRGBColor(r: 0.42, g: 0.42, b: 0.42)])
+
+        XCTAssertGreaterThanOrEqual(palette.count, 3)
+        XCTAssertTrue(palette.allSatisfy {
+            abs($0.r - $0.g) < 0.02 && abs($0.g - $0.b) < 0.02
+        })
+    }
+
     private func makeStripedImage(colors: [UIColor], size: CGSize) -> UIImage {
         let renderer = UIGraphicsImageRenderer(size: size)
         return renderer.image { context in

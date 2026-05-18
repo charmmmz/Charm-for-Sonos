@@ -25,8 +25,9 @@ APNs, and the Live Activity updates within another ~1–3 s.
   applies album-palette transitions on Sonos play/track changes.
   The iOS Light Motion Speed setting controls the flow interval; set
   `HUE_FLOW_INTERVAL_SECONDS` only when the NAS should override that value.
-  Mapped Entertainment Areas use Hue Entertainment DTLS streaming when the
-  Bridge provides a streaming client key, with CLIP v2 as a fallback.
+  Mapped Entertainment Areas use the private Hue EDK sidecar for Hue
+  Entertainment streaming effects, with CLIP v2 color rotation as a Music
+  Ambience fallback when sync is unavailable.
 - Counter-Strike 2 Game State Integration payloads can be posted directly to
   the relay. When Hue Ambience config has CS2 sync enabled and at least one
   mapped Entertainment Area, the relay renders low-latency game lighting from
@@ -46,7 +47,8 @@ external transport once Phase 1 is verified.
    keys blank for now; the relay starts in *dry-run* mode.
 3. **Deploy via Portainer** — Stacks → Add stack, paste the contents of
    `docker-compose.yml`, attach `.env` under "Environment variables", deploy.
-   The stack pulls `ghcr.io/charmmmz/charm-for-sonos/nas-relay:latest`.
+   The stack pulls `ghcr.io/charmmmz/charm-for-sonos/nas-relay:latest` and
+   `ghcr.io/charmmmz/hue-edk-sidecar:latest`.
    If the GHCR package is private, log in first with a GitHub personal access
    token that can read packages.
 4. **Verify**:
@@ -55,6 +57,14 @@ external transport once Phase 1 is verified.
    ```
    Should return JSON with at least one entry under `groups[]`. The first
    sample takes a few seconds while the relay enumerates speakers.
+   On the NAS itself, the Hue EDK sidecar should also answer:
+   ```bash
+   curl http://127.0.0.1:8788/health
+   ```
+   The sidecar binds to loopback by default, so this second check is not
+   expected to work from another LAN device. If relay health refuses the
+   connection, the iOS app will treat NAS sync as unavailable and keep using
+   phone-side Hue sync.
 5. **Watch logs** (Portainer → Containers → relay → Logs). Play / pause
    / change track on Sonos and you should see lines like:
    ```

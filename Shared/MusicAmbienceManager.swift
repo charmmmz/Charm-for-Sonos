@@ -173,8 +173,13 @@ final class MusicAmbienceManager {
         }
         lastResolvedTargets = resolvedTargets
 
-        let palette = lastPalette
         let motionStyle = store.motionStyle
+        let palette: [HueRGBColor]
+        if motionStyle == .flowing {
+            palette = AlbumPaletteExtractor.motionPalette(from: lastPalette)
+        } else {
+            palette = lastPalette
+        }
         let signature = RenderSignature(
             trackKey: trackKey,
             palette: palette,
