@@ -35,6 +35,8 @@ struct SonosWidgetApp: App {
         // iOS does NOT reliably fire willTerminateNotification on force-quit,
         // so clean up any orphaned Live Activities from a previous session here.
         for activity in Activity<SonosActivityAttributes>.activities {
+            SonosLog.info(.station,
+                          "live_activity source=app action=end-on-launch activity=\(Self.shortLiveActivityIdentifier(activity.id))")
             Task { await activity.end(nil, dismissalPolicy: .immediate) }
         }
     }
@@ -102,5 +104,10 @@ struct SonosWidgetApp: App {
         task.expirationHandler = {
             refreshTask.cancel()
         }
+    }
+
+    private static func shortLiveActivityIdentifier(_ value: String) -> String {
+        guard value.count > 14 else { return value }
+        return "\(value.prefix(8))…\(value.suffix(4))"
     }
 }

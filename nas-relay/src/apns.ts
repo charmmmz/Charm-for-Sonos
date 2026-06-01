@@ -125,8 +125,14 @@ export class ApnsClient {
 
     if (this.dryRun || !this.provider) {
       this.log.info(
-        { event, tokens: tokens.length, payload: contentState },
-        '[DRY-RUN] would push Live Activity update',
+        {
+          source: 'relay',
+          action: 'apns-dry-run',
+          event,
+          tokens: tokens.length,
+          state: summarizeLiveActivityState(contentState),
+        },
+        'live_activity',
       );
       return { sent: tokens.length, failed: 0, unregistered: [] };
     }
@@ -153,10 +159,48 @@ export class ApnsClient {
       this.log.error({ err }, 'APNs send threw');
       result.failed = tokens.length;
     }
+    this.log.info(
+      {
+        source: 'relay',
+        action: 'apns-send-result',
+        event,
+        tokens: tokens.length,
+        sent: result.sent,
+        failed: result.failed,
+        unregistered: result.unregistered.map(token => token.slice(0, 8) + '…'),
+        state: summarizeLiveActivityState(contentState),
+      },
+      'live_activity',
+    );
     return result;
   }
 
   shutdown(): void {
     this.provider?.shutdown();
+  }
+}
+
+function summarizeLiveActivityState(state: LiveActivityContentState): Record<string, unknown> {
+  return {
+    trackTitle: state.trackTitle,
+    artist: state.artist,
+    isPlaying: state.isPlaying,
+    positionSeconds: Math.round(state.positionSeconds),
+    durationSeconds: Math.round(state.durationSeconds),
+    color: state.dominantColorHex ?? null,
+    artBytes: base64ByteLength(state.albumArtThumbnail),
+    groupMemberCount: state.groupMemberCount,
+    playbackSourceRaw: state.playbackSourceRaw ?? null,
+    hasStartedAt: state.startedAt !== undefined && state.startedAt !== null,
+    hasEndsAt: state.endsAt !== undefined && state.endsAt !== null,
+  };
+}
+
+function base64ByteLength(value: string | null | undefined): number {
+  if (!value) return 0;
+  try {
+    return Buffer.byteLength(value, 'base64');
+  } catch {
+    return 0;
   }
 }

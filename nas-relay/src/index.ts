@@ -21,7 +21,7 @@ import {
   buildLiveActivityContentState,
   hashLiveActivityContentState,
 } from './liveActivityContentState.js';
-import type { RegisterRequest, SonosGroupSnapshot } from './types.js';
+import type { LiveActivityContentState, RegisterRequest, SonosGroupSnapshot } from './types.js';
 
 const log = pino({
   level: process.env.LOG_LEVEL ?? 'info',
@@ -84,15 +84,55 @@ async function main(): Promise<void> {
     }
 
     const matching = tokens.forGroup(snap.groupId);
-    if (matching.length === 0) return;
+    if (matching.length === 0) {
+      log.info(
+        {
+          source: 'relay',
+          action: 'skip',
+          trigger: 'sonos-change',
+          reason: 'no-registered-tokens',
+          groupId: snap.groupId,
+          snapshot: summarizeSnapshot(snap),
+        },
+        'live_activity',
+      );
+      return;
+    }
 
     const state = await buildLiveActivityContentState(snap);
     const hash = hashLiveActivityContentState(state);
+    log.info(
+      {
+        source: 'relay',
+        action: 'state-built',
+        trigger: 'sonos-change',
+        groupId: snap.groupId,
+        registeredTokens: matching.length,
+        hash,
+        state: summarizeLiveActivityState(state),
+      },
+      'live_activity',
+    );
 
     // Skip no-op pushes — a single Sonos event often fires with identical
     // payload right after we just refreshed (eventing + polling overlap).
     const targets = matching.filter(t => t.lastSentHash !== hash);
-    if (targets.length === 0) return;
+    if (targets.length === 0) {
+      log.info(
+        {
+          source: 'relay',
+          action: 'skip',
+          trigger: 'sonos-change',
+          reason: 'last-sent-hash-match',
+          groupId: snap.groupId,
+          registeredTokens: matching.length,
+          hash,
+          state: summarizeLiveActivityState(state),
+        },
+        'live_activity',
+      );
+      return;
+    }
 
     const result = await apns.pushUpdate(
       targets.map(t => t.token),
@@ -103,9 +143,20 @@ async function main(): Promise<void> {
     }
     for (const dead of result.unregistered) tokens.unregister(dead);
 
-    log.debug(
-      { groupId: snap.groupId, state, sent: result.sent, failed: result.failed },
-      'pushed Live Activity update',
+    log.info(
+      {
+        source: 'relay',
+        action: 'apns-update',
+        trigger: 'sonos-change',
+        groupId: snap.groupId,
+        tokenCount: targets.length,
+        sent: result.sent,
+        failed: result.failed,
+        unregistered: result.unregistered.map(shortToken),
+        hash,
+        state: summarizeLiveActivityState(state),
+      },
+      'live_activity',
     );
   });
 
@@ -161,6 +212,16 @@ async function main(): Promise<void> {
       res.status(400).json({ error: 'groupId and token are required' });
       return;
     }
+    log.info(
+      {
+        source: 'relay',
+        action: 'register-request',
+        groupId: body.groupId,
+        token: shortToken(body.token),
+        speakerName: body.attributes?.speakerName ?? null,
+      },
+      'live_activity',
+    );
     tokens.register({
       groupId: body.groupId,
       token: body.token,
@@ -173,17 +234,65 @@ async function main(): Promise<void> {
     const snap = sonos.current(body.groupId);
     if (snap) {
       const state = await buildLiveActivityContentState(snap);
+      const hash = hashLiveActivityContentState(state);
+      log.info(
+        {
+          source: 'relay',
+          action: 'state-built',
+          trigger: 'register-initial',
+          groupId: body.groupId,
+          token: shortToken(body.token),
+          hash,
+          state: summarizeLiveActivityState(state),
+        },
+        'live_activity',
+      );
       const result = await apns.pushUpdate([body.token], state);
       for (const dead of result.unregistered) tokens.unregister(dead);
-      tokens.recordSent(body.token, hashLiveActivityContentState(state));
+      tokens.recordSent(body.token, hash);
+      log.info(
+        {
+          source: 'relay',
+          action: 'apns-update',
+          trigger: 'register-initial',
+          groupId: body.groupId,
+          token: shortToken(body.token),
+          sent: result.sent,
+          failed: result.failed,
+          unregistered: result.unregistered.map(shortToken),
+          hash,
+          state: summarizeLiveActivityState(state),
+        },
+        'live_activity',
+      );
       res.json({ ok: true, initialState: state });
       return;
     }
+    log.info(
+      {
+        source: 'relay',
+        action: 'skip',
+        trigger: 'register-initial',
+        reason: 'no-current-snapshot',
+        groupId: body.groupId,
+        token: shortToken(body.token),
+      },
+      'live_activity',
+    );
     res.json({ ok: true, initialState: null });
   });
 
   app.delete('/api/register-activity/:token', (req, res) => {
     const ok = tokens.unregister(req.params.token);
+    log.info(
+      {
+        source: 'relay',
+        action: 'unregister-request',
+        token: shortToken(req.params.token),
+        removed: ok,
+      },
+      'live_activity',
+    );
     res.json({ ok });
   });
 
@@ -208,3 +317,45 @@ main().catch(err => {
   log.fatal({ err }, 'fatal startup error');
   process.exit(1);
 });
+
+function summarizeSnapshot(snap: SonosGroupSnapshot): Record<string, unknown> {
+  return {
+    trackTitle: snap.trackTitle || 'Not Playing',
+    artist: snap.artist || '-',
+    isPlaying: snap.isPlaying,
+    positionSeconds: Math.round(snap.positionSeconds),
+    durationSeconds: Math.round(snap.durationSeconds),
+    hasAlbumArtUri: Boolean(snap.albumArtUri),
+    playbackSourceRaw: snap.playbackSourceRaw ?? null,
+    sampledAt: snap.sampledAt.toISOString(),
+  };
+}
+
+function summarizeLiveActivityState(state: LiveActivityContentState): Record<string, unknown> {
+  return {
+    trackTitle: state.trackTitle,
+    artist: state.artist,
+    isPlaying: state.isPlaying,
+    positionSeconds: Math.round(state.positionSeconds),
+    durationSeconds: Math.round(state.durationSeconds),
+    color: state.dominantColorHex ?? null,
+    artBytes: base64ByteLength(state.albumArtThumbnail),
+    groupMemberCount: state.groupMemberCount,
+    playbackSourceRaw: state.playbackSourceRaw ?? null,
+    hasStartedAt: state.startedAt !== undefined && state.startedAt !== null,
+    hasEndsAt: state.endsAt !== undefined && state.endsAt !== null,
+  };
+}
+
+function base64ByteLength(value: string | null | undefined): number {
+  if (!value) return 0;
+  try {
+    return Buffer.byteLength(value, 'base64');
+  } catch {
+    return 0;
+  }
+}
+
+function shortToken(token: string): string {
+  return token.length <= 12 ? token : `${token.slice(0, 6)}…${token.slice(-4)}`;
+}

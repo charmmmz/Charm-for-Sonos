@@ -92,6 +92,11 @@ final class SonosManager {
     /// relay. We keep this around so `stopLiveActivity` can fire a DELETE
     /// even after the underlying activity is gone.
     private var lastRegisteredPushToken: String?
+    /// True only after the relay has accepted the current Live Activity token.
+    /// Kept separate from `lastRegisteredPushToken` so token rotation failures
+    /// can temporarily fall back to local updates without losing the old token
+    /// needed for unregister cleanup.
+    private var liveActivityRelayWriterReady: Bool = false
     private var albumArtTask: Task<Void, Never>?
     private var backgroundTaskID: UIBackgroundTaskIdentifier = .invalid
     private var backgroundKeepaliveTask: Task<Void, Never>?
@@ -2194,10 +2199,16 @@ final class SonosManager {
     // MARK: - Live Activity
 
     private func manageLiveActivity() {
-        guard let speaker = selectedSpeaker else { return }
+        guard let speaker = selectedSpeaker else {
+            logLiveActivity(action: "skip", reason: "no-selected-speaker")
+            return
+        }
 
         let shouldKeep = isPlaying || transportState == .paused || transportState == .transitioning
         guard shouldKeep else {
+            logLiveActivity(action: "stop-request",
+                            mode: currentActivityUsesRelay ? "relay-token" : "local",
+                            reason: "not-playing")
             stopLiveActivity()
             return
         }
@@ -2205,6 +2216,10 @@ final class SonosManager {
         // Reattach to an existing activity if the in-memory reference was lost (app relaunch).
         if currentActivity == nil {
             currentActivity = Activity<SonosActivityAttributes>.activities.first
+            if let currentActivity {
+                logLiveActivity(action: "reattach", activityID: currentActivity.id,
+                                mode: currentActivityUsesRelay ? "relay-token" : "local")
+            }
         }
 
         let useRelay = RelayManager.shared.isAvailable
@@ -2213,6 +2228,10 @@ final class SonosManager {
         // own a Live Activity created in the *other* mode, end it. The
         // create-path below will then build a fresh one in the right mode.
         if let _ = currentActivity, currentActivityUsesRelay != useRelay {
+            logLiveActivity(action: "recreate-request",
+                            mode: currentActivityUsesRelay ? "relay-token" : "local",
+                            reason: "relay-availability-changed",
+                            extra: ["newRelayAvailable=\(useRelay)"])
             stopLiveActivity()
         }
 
@@ -2244,9 +2263,14 @@ final class SonosManager {
                     )
                     currentActivity = activity
                     currentActivityUsesRelay = true
+                    liveActivityRelayWriterReady = false
+                    logLiveActivity(action: "create", activityID: activity.id, mode: "relay-token",
+                                    state: state, extra: ["speaker=\(Self.liveActivityLogValue(speaker.name))"])
                     spawnPushTokenObserver(activity: activity, speakerName: speaker.name)
                     return
                 } catch {
+                    logLiveActivity(action: "create-failed", mode: "relay-token",
+                                    reason: error.localizedDescription, state: state)
                     SonosLog.info(.station,
                         "Activity.request(.token) failed (\(error.localizedDescription)). " +
                         "Falling back to local-update Live Activity.")
@@ -2261,7 +2285,12 @@ final class SonosManager {
                 )
                 currentActivity = activity
                 currentActivityUsesRelay = false
+                liveActivityRelayWriterReady = false
+                logLiveActivity(action: "create", activityID: activity.id, mode: "local",
+                                state: state, extra: ["speaker=\(Self.liveActivityLogValue(speaker.name))"])
             } catch {
+                logLiveActivity(action: "create-failed", mode: "local",
+                                reason: error.localizedDescription, state: state)
                 SonosLog.error(.station,
                     "Activity.request failed: \(error.localizedDescription)")
                 currentActivityUsesRelay = false
@@ -2275,11 +2304,33 @@ final class SonosManager {
         // Instead, skip the update entirely — the existing timerInterval keeps animating on its
         // own using the device clock. We'll push a fresh state once the new track is actually
         // playing (next refreshState cycle).
-        guard transportState != .transitioning else { return }
+        guard transportState != .transitioning else {
+            logLiveActivity(action: "skip-update", activityID: currentActivity?.id,
+                            mode: currentActivityUsesRelay ? "relay-token" : "local",
+                            reason: "transitioning")
+            return
+        }
+
+        guard Self.shouldPerformLocalLiveActivityUpdate(
+            usesRelay: currentActivityUsesRelay,
+            relayWriterReady: liveActivityRelayWriterReady
+        ) else {
+            logLiveActivity(action: "skip-update", activityID: currentActivity?.id,
+                            mode: "relay-token",
+                            reason: "nas-primary-writer",
+                            token: lastRegisteredPushToken,
+                            extra: ["localActivityUpdate=false"])
+            return
+        }
 
         let state = makeActivityState()
+        let activity = currentActivity
+        logLiveActivity(action: "update-request", activityID: activity?.id,
+                        mode: currentActivityUsesRelay ? "relay-token" : "local",
+                        state: state,
+                        extra: ["localActivityUpdate=true"])
         Task {
-            await currentActivity?.update(
+            await activity?.update(
                 .init(state: state, staleDate: Self.liveActivityStaleDate()))
         }
     }
@@ -2291,6 +2342,96 @@ final class SonosManager {
         Date().addingTimeInterval(60 * 60)
     }
 
+    nonisolated static func shouldPerformLocalLiveActivityUpdate(
+        usesRelay: Bool,
+        relayWriterReady: Bool
+    ) -> Bool {
+        !usesRelay || !relayWriterReady
+    }
+
+    private func logLiveActivity(action: String,
+                                 activityID: String? = nil,
+                                 mode: String? = nil,
+                                 reason: String? = nil,
+                                 state: SonosActivityAttributes.ContentState? = nil,
+                                 token: String? = nil,
+                                 groupId: String? = nil,
+                                 relayURL: URL? = nil,
+                                 extra: [String] = []) {
+        var parts = [
+            "live_activity",
+            "source=app",
+            "action=\(action)",
+            "relayStatus=\(liveActivityRelayStatusLogValue())"
+        ]
+        if let activityID {
+            parts.append("activity=\(Self.shortLiveActivityIdentifier(activityID))")
+        }
+        if let mode {
+            parts.append("mode=\(mode)")
+        }
+        if let reason {
+            parts.append("reason=\(Self.liveActivityLogValue(reason))")
+        }
+        if let token {
+            parts.append("token=\(Self.shortLiveActivityIdentifier(token))")
+        }
+        if let groupId {
+            parts.append("groupId=\(Self.liveActivityLogValue(groupId))")
+        }
+        if let relayURL {
+            parts.append("relayURL=\(Self.liveActivityLogValue(relayURL.absoluteString))")
+        }
+        if let state {
+            parts.append(contentsOf: Self.liveActivityStateLogParts(state))
+        }
+        parts.append(contentsOf: extra)
+        SonosLog.info(.station, parts.joined(separator: " "))
+    }
+
+    private func liveActivityRelayStatusLogValue() -> String {
+        switch RelayManager.shared.status {
+        case .disabled:
+            return "disabled"
+        case .probing:
+            return "probing"
+        case .connected(let groupCount):
+            return "connected(\(groupCount))"
+        case .unreachable:
+            return "unreachable"
+        }
+    }
+
+    private static func liveActivityStateLogParts(
+        _ state: SonosActivityAttributes.ContentState
+    ) -> [String] {
+        [
+            "track=\(liveActivityLogValue(state.trackTitle))",
+            "artist=\(liveActivityLogValue(state.artist))",
+            "playing=\(state.isPlaying)",
+            "pos=\(Int(state.positionSeconds.rounded()))",
+            "duration=\(Int(state.durationSeconds.rounded()))",
+            "color=\(state.dominantColorHex ?? "nil")",
+            "artBytes=\(state.albumArtThumbnail?.count ?? 0)",
+            "members=\(state.groupMemberCount)",
+            "sourceRaw=\(state.playbackSourceRaw ?? "nil")",
+            "hasStartedAt=\(state.startedAt != nil)",
+            "hasEndsAt=\(state.endsAt != nil)"
+        ]
+    }
+
+    private static func liveActivityLogValue(_ value: String) -> String {
+        let sanitized = value
+            .replacingOccurrences(of: "\n", with: " ")
+            .replacingOccurrences(of: "\r", with: " ")
+        return "'\(sanitized)'"
+    }
+
+    private static func shortLiveActivityIdentifier(_ value: String) -> String {
+        guard value.count > 14 else { return value }
+        return "\(value.prefix(8))…\(value.suffix(4))"
+    }
+
     /// Drains `Activity.pushTokenUpdates` and POSTs each rotation to the
     /// relay so the NAS knows where to deliver Live Activity pushes for the
     /// current Sonos coordinator. Tokens roll over occasionally; we resend
@@ -2299,11 +2440,27 @@ final class SonosManager {
                                         speakerName: String) {
         pushTokenTask?.cancel()
         let groupId = liveActivityGroupId() ?? speakerName
+        logLiveActivity(action: "push-token-observer-start", activityID: activity.id,
+                        mode: "relay-token", groupId: groupId)
         pushTokenTask = Task { [weak self] in
             for await tokenData in activity.pushTokenUpdates {
                 guard !Task.isCancelled else { return }
                 let hex = tokenData.map { String(format: "%02x", $0) }.joined()
-                guard let url = await RelayManager.shared.url else { continue }
+                guard let url = await RelayManager.shared.url else {
+                    await MainActor.run {
+                        self?.liveActivityRelayWriterReady = false
+                        self?.logLiveActivity(action: "register-token-skip", activityID: activity.id,
+                                              mode: "relay-token", reason: "missing-relay-url",
+                                              token: hex, groupId: groupId)
+                    }
+                    continue
+                }
+                await MainActor.run {
+                    self?.liveActivityRelayWriterReady = false
+                    self?.logLiveActivity(action: "push-token-yield", activityID: activity.id,
+                                          mode: "relay-token", token: hex,
+                                          groupId: groupId, relayURL: url)
+                }
                 do {
                     try await RelayClient.registerActivity(
                         baseURL: url,
@@ -2311,8 +2468,24 @@ final class SonosManager {
                         token: hex,
                         speakerName: speakerName
                     )
-                    await MainActor.run { self?.lastRegisteredPushToken = hex }
+                    await MainActor.run {
+                        self?.lastRegisteredPushToken = hex
+                        self?.liveActivityRelayWriterReady = true
+                        self?.logLiveActivity(action: "register-token-success",
+                                              activityID: activity.id,
+                                              mode: "relay-token", token: hex,
+                                              groupId: groupId, relayURL: url)
+                    }
                 } catch {
+                    await MainActor.run {
+                        self?.liveActivityRelayWriterReady = false
+                        self?.logLiveActivity(action: "register-token-failed",
+                                              activityID: activity.id,
+                                              mode: "relay-token",
+                                              reason: error.localizedDescription,
+                                              token: hex, groupId: groupId,
+                                              relayURL: url)
+                    }
                     SonosLog.info(.station, "relay register failed: \(error.localizedDescription)")
                 }
             }
@@ -2332,12 +2505,17 @@ final class SonosManager {
         guard let activity = currentActivity else { return }
         currentActivity = nil
         currentActivityUsesRelay = false
+        liveActivityRelayWriterReady = false
         pushTokenTask?.cancel()
         pushTokenTask = nil
         let tokenToUnregister = lastRegisteredPushToken
         lastRegisteredPushToken = nil
+        logLiveActivity(action: "end", activityID: activity.id,
+                        mode: "local-or-relay", token: tokenToUnregister)
         Task { await activity.end(nil, dismissalPolicy: .immediate) }
         if let token = tokenToUnregister, let url = RelayManager.shared.url {
+            logLiveActivity(action: "unregister-token-request", activityID: activity.id,
+                            token: token, relayURL: url)
             Task { try? await RelayClient.unregisterActivity(baseURL: url, token: token) }
         }
     }
@@ -2348,14 +2526,19 @@ final class SonosManager {
     func endAllActivities() {
         currentActivity = nil
         currentActivityUsesRelay = false
+        liveActivityRelayWriterReady = false
         pushTokenTask?.cancel()
         pushTokenTask = nil
         let tokenToUnregister = lastRegisteredPushToken
         lastRegisteredPushToken = nil
+        logLiveActivity(action: "end-all", token: tokenToUnregister,
+                        extra: ["activityCount=\(Activity<SonosActivityAttributes>.activities.count)"])
         for activity in Activity<SonosActivityAttributes>.activities {
+            logLiveActivity(action: "end-all-activity", activityID: activity.id)
             Task { await activity.end(nil, dismissalPolicy: .immediate) }
         }
         if let token = tokenToUnregister, let url = RelayManager.shared.url {
+            logLiveActivity(action: "unregister-token-request", token: token, relayURL: url)
             Task { try? await RelayClient.unregisterActivity(baseURL: url, token: token) }
         }
     }
