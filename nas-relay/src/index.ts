@@ -1,12 +1,11 @@
 import express from 'express';
 import pino from 'pino';
 import pinoHttp from 'pino-http';
-import crypto from 'node:crypto';
 import path from 'node:path';
 
 import { SonosBridge } from './sonos.js';
 import { createInternalSonosRouter, internalAuthMiddleware } from './internalSonosRoutes.js';
-import { ApnsClient, toSwiftDate } from './apns.js';
+import { ApnsClient } from './apns.js';
 import { TokenStore } from './tokenStore.js';
 import { HueAmbienceConfigStore } from './hueConfigStore.js';
 import { HueAmbienceService } from './hueAmbienceService.js';
@@ -18,7 +17,11 @@ import { Cs2GameStateService } from './cs2GameState.js';
 import { createCs2GameStateRouter } from './cs2Routes.js';
 import { Cs2LightingService } from './cs2Lighting.js';
 import { shouldIgnoreHttpAutoLog } from './httpLogging.js';
-import type { LiveActivityContentState, RegisterRequest, SonosGroupSnapshot } from './types.js';
+import {
+  buildLiveActivityContentState,
+  hashLiveActivityContentState,
+} from './liveActivityContentState.js';
+import type { RegisterRequest, SonosGroupSnapshot } from './types.js';
 
 const log = pino({
   level: process.env.LOG_LEVEL ?? 'info',
@@ -83,8 +86,8 @@ async function main(): Promise<void> {
     const matching = tokens.forGroup(snap.groupId);
     if (matching.length === 0) return;
 
-    const state = buildContentState(snap);
-    const hash = hashState(state);
+    const state = await buildLiveActivityContentState(snap);
+    const hash = hashLiveActivityContentState(state);
 
     // Skip no-op pushes — a single Sonos event often fires with identical
     // payload right after we just refreshed (eventing + polling overlap).
@@ -169,10 +172,10 @@ async function main(): Promise<void> {
     // next track change.
     const snap = sonos.current(body.groupId);
     if (snap) {
-      const state = buildContentState(snap);
+      const state = await buildLiveActivityContentState(snap);
       const result = await apns.pushUpdate([body.token], state);
       for (const dead of result.unregistered) tokens.unregister(dead);
-      tokens.recordSent(body.token, hashState(state));
+      tokens.recordSent(body.token, hashLiveActivityContentState(state));
       res.json({ ok: true, initialState: state });
       return;
     }
@@ -199,49 +202,6 @@ async function main(): Promise<void> {
   };
   process.on('SIGTERM', () => shutdown('SIGTERM'));
   process.on('SIGINT', () => shutdown('SIGINT'));
-}
-
-function buildContentState(snap: SonosGroupSnapshot): LiveActivityContentState {
-  const sampledUnix = snap.sampledAt.getTime() / 1000;
-  const startedAtUnix = snap.isPlaying && snap.durationSeconds > 0
-    ? sampledUnix - snap.positionSeconds
-    : null;
-  const endsAtUnix = snap.isPlaying && snap.durationSeconds > 0
-    ? sampledUnix + (snap.durationSeconds - snap.positionSeconds)
-    : null;
-
-  return {
-    trackTitle: snap.trackTitle || 'Not Playing',
-    artist: snap.artist || '—',
-    album: snap.album,
-    isPlaying: snap.isPlaying,
-    positionSeconds: snap.positionSeconds,
-    durationSeconds: snap.durationSeconds,
-    dominantColorHex: null,
-    startedAt: startedAtUnix !== null ? toSwiftDate(startedAtUnix) : null,
-    endsAt: endsAtUnix !== null ? toSwiftDate(endsAtUnix) : null,
-    albumArtThumbnail: null, // Phase 2: fetch + downscale art on the relay
-    groupMemberCount: snap.groupMemberCount,
-    playbackSourceRaw: snap.playbackSourceRaw ?? null,
-  };
-}
-
-function hashState(state: LiveActivityContentState): string {
-  // Hash only the user-visible fields; ignore startedAt/endsAt drift since
-  // those move on every poll even when playback is unchanged.
-  const projection = {
-    t: state.trackTitle,
-    a: state.artist,
-    al: state.album,
-    p: state.isPlaying,
-    d: state.durationSeconds,
-    s: state.playbackSourceRaw,
-  };
-  return crypto
-    .createHash('sha256')
-    .update(JSON.stringify(projection))
-    .digest('hex')
-    .slice(0, 16);
 }
 
 main().catch(err => {
