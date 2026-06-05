@@ -9,6 +9,7 @@ struct SearchView: View {
     @State private var selectedServiceTab: String?
     /// Tracks which item is currently being loaded for playback
     @State private var playingItemId: String?
+    @State private var favoriteSheetItem: BrowseItem?
     @State private var isReconnectingSonos = false
     @Bindable private var auth = SonosAuth.shared
 
@@ -100,6 +101,11 @@ struct SearchView: View {
                     }
                 }
                 Button("Cancel", role: .cancel) {}
+            }
+            .sheet(item: $favoriteSheetItem) { item in
+                FavoriteControlSheet(item: item, searchManager: searchManager, manager: manager)
+                    .presentationDetents([.medium])
+                    .presentationDragIndicator(.visible)
             }
         }
     }
@@ -206,6 +212,23 @@ struct SearchView: View {
         Task {
             await searchManager.startStation(item: item, manager: manager)
             withAnimation(.easeOut(duration: 0.2)) { playingItemId = nil }
+        }
+    }
+
+    private func handleFavoriteAction(_ item: BrowseItem) {
+        if searchManager.appleMusicFavoriteResource(for: item) != nil {
+            favoriteSheetItem = item
+            return
+        }
+
+        Task { await toggleSonosFavorite(item) }
+    }
+
+    private func toggleSonosFavorite(_ item: BrowseItem) async {
+        if searchManager.isFavorited(item) {
+            _ = await searchManager.removeFromFavorites(item: item, manager: manager)
+        } else {
+            _ = await searchManager.addToFavorites(item: item, manager: manager)
         }
     }
 
@@ -1137,12 +1160,24 @@ struct SearchView: View {
     @ViewBuilder
     private func itemContextMenu(_ item: BrowseItem) -> some View {
         let favorited = searchManager.isFavorited(item)
+        let appleMusicResource = searchManager.appleMusicFavoriteResource(for: item)
 
         if item.isArtist {
             Button {
                 startStationForItem(item)
             } label: {
                 Label("Start Station", systemImage: "antenna.radiowaves.left.and.right")
+            }
+
+            Divider()
+
+            Button {
+                handleFavoriteAction(item)
+            } label: {
+                Label(appleMusicResource == nil
+                      ? (favorited ? "Remove from Sonos Favorites" : "Add to Sonos Favorites")
+                      : "Favorites",
+                      systemImage: favorited ? "heart.fill" : "heart")
             }
         } else if item.uri != nil || item.resMD != nil {
             Button {
@@ -1165,15 +1200,11 @@ struct SearchView: View {
                 Divider()
 
                 Button {
-                    Task {
-                        if favorited {
-                            _ = await searchManager.removeFromFavorites(item: item, manager: manager)
-                        } else {
-                            _ = await searchManager.addToFavorites(item: item, manager: manager)
-                        }
-                    }
+                    handleFavoriteAction(item)
                 } label: {
-                    Label(favorited ? "Remove from Sonos Favorites" : "Add to Sonos Favorites",
+                    Label(appleMusicResource == nil
+                          ? (favorited ? "Remove from Sonos Favorites" : "Add to Sonos Favorites")
+                          : "Favorites",
                           systemImage: favorited ? "heart.slash" : "heart")
                 }
             }
@@ -1273,6 +1304,7 @@ struct FavoriteCategoryDetailView: View {
 
     @State private var filterText = ""
     @State private var playingItemId: String?
+    @State private var favoriteSheetItem: BrowseItem?
 
     private var filteredItems: [BrowseItem] {
         guard !filterText.isEmpty else { return items }
@@ -1332,6 +1364,11 @@ struct FavoriteCategoryDetailView: View {
             .ignoresSafeArea()
         }
         .toolbarBackground(.hidden, for: .navigationBar)
+        .sheet(item: $favoriteSheetItem) { item in
+            FavoriteControlSheet(item: item, searchManager: searchManager, manager: manager)
+                .presentationDetents([.medium])
+                .presentationDragIndicator(.visible)
+        }
     }
 
     // MARK: - Local Search Bar
@@ -1574,9 +1611,27 @@ struct FavoriteCategoryDetailView: View {
         }
     }
 
+    private func handleFavoriteAction(_ item: BrowseItem) {
+        if searchManager.appleMusicFavoriteResource(for: item) != nil {
+            favoriteSheetItem = item
+            return
+        }
+
+        Task { await toggleSonosFavorite(item) }
+    }
+
+    private func toggleSonosFavorite(_ item: BrowseItem) async {
+        if searchManager.isFavorited(item) {
+            _ = await searchManager.removeFromFavorites(item: item, manager: manager)
+        } else {
+            _ = await searchManager.addToFavorites(item: item, manager: manager)
+        }
+    }
+
     @ViewBuilder
     private func contextMenu(_ item: BrowseItem) -> some View {
         let favorited = searchManager.isFavorited(item)
+        let appleMusicResource = searchManager.appleMusicFavoriteResource(for: item)
 
         if item.isArtist {
             Button {
@@ -1588,6 +1643,17 @@ struct FavoriteCategoryDetailView: View {
                 }
             } label: {
                 Label("Start Station", systemImage: "antenna.radiowaves.left.and.right")
+            }
+
+            Divider()
+
+            Button {
+                handleFavoriteAction(item)
+            } label: {
+                Label(appleMusicResource == nil
+                      ? (favorited ? "Remove from Sonos Favorites" : "Add to Sonos Favorites")
+                      : "Favorites",
+                      systemImage: favorited ? "heart.fill" : "heart")
             }
         } else if item.uri != nil || item.resMD != nil {
             Button { playItem(item) } label: {
@@ -1608,15 +1674,11 @@ struct FavoriteCategoryDetailView: View {
                 Divider()
 
                 Button {
-                    Task {
-                        if favorited {
-                            _ = await searchManager.removeFromFavorites(item: item, manager: manager)
-                        } else {
-                            _ = await searchManager.addToFavorites(item: item, manager: manager)
-                        }
-                    }
+                    handleFavoriteAction(item)
                 } label: {
-                    Label(favorited ? "Remove from Sonos Favorites" : "Add to Sonos Favorites",
+                    Label(appleMusicResource == nil
+                          ? (favorited ? "Remove from Sonos Favorites" : "Add to Sonos Favorites")
+                          : "Favorites",
                           systemImage: favorited ? "heart.slash" : "heart")
                 }
             }

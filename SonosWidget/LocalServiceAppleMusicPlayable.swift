@@ -1,0 +1,346 @@
+import Foundation
+import MusicKit
+
+enum LocalServiceSonosPlaybackError: LocalizedError, Equatable {
+    case noPlayableCatalogID
+    case appleMusicAccountMissing
+    case localServiceMappingMissing
+    case playbackFailed(String?)
+
+    var errorDescription: String? {
+        switch self {
+        case .noPlayableCatalogID:
+            return "This Apple Music item could not be matched to a Sonos-playable Apple Music resource."
+        case .appleMusicAccountMissing:
+            return "Apple Music is not linked to this Sonos household."
+        case .localServiceMappingMissing:
+            return "Sonos has not exposed the local Apple Music service mapping yet. Try again on the same network as your speaker."
+        case .playbackFailed(let message):
+            return message ?? "Sonos could not start this Apple Music item."
+        }
+    }
+}
+
+struct LocalServiceAppleMusicPlayable: Equatable, Identifiable, Sendable {
+    enum Kind: Equatable, Sendable {
+        case song
+        case album
+        case artist
+        case playlist
+        case station
+
+        var cloudType: String {
+            switch self {
+            case .song: return "TRACK"
+            case .album: return "ALBUM"
+            case .artist: return "ARTIST"
+            case .playlist: return "PLAYLIST"
+            case .station: return "PROGRAM"
+            }
+        }
+
+        var isContainer: Bool {
+            switch self {
+            case .album, .playlist: return true
+            case .song, .artist, .station: return false
+            }
+        }
+    }
+
+    let kind: Kind
+    let catalogID: String
+    let title: String
+    let artist: String
+    let album: String
+    let artworkURLString: String?
+    let duration: TimeInterval?
+
+    var id: String { "\(kind.cloudType)-\(catalogID)" }
+    var cloudType: String { kind.cloudType }
+    var isContainer: Bool { kind.isContainer }
+
+    var sonosObjectID: String {
+        switch kind {
+        case .song:
+            return "10032020\(catalogID)"
+        case .album, .artist, .playlist, .station:
+            return catalogID
+        }
+    }
+
+    var sonosMimeType: String? {
+        kind == .song ? "audio/mp4" : nil
+    }
+
+    static func make(
+        kind: Kind,
+        rawID: String,
+        playParameterCandidates: [String],
+        title: String,
+        artist: String,
+        album: String,
+        artworkURLString: String?,
+        duration: TimeInterval?
+    ) -> LocalServiceAppleMusicPlayable? {
+        let candidates = playParameterCandidates + [rawID]
+        guard let catalogID = firstCatalogID(in: candidates, kind: kind) else {
+            return nil
+        }
+
+        return LocalServiceAppleMusicPlayable(
+            kind: kind,
+            catalogID: catalogID,
+            title: title,
+            artist: artist,
+            album: album,
+            artworkURLString: artworkURLString,
+            duration: duration
+        )
+    }
+
+    static func make(song: Song) -> LocalServiceAppleMusicPlayable? {
+        make(
+            kind: .song,
+            rawID: song.id.rawValue,
+            playParameterCandidates: playParameterCandidates(from: song.playParameters),
+            title: song.title,
+            artist: song.artistName,
+            album: song.albumTitle ?? "",
+            artworkURLString: artworkURLString(song.artwork),
+            duration: song.duration
+        )
+    }
+
+    static func make(track: Track) -> LocalServiceAppleMusicPlayable? {
+        guard case .song = track else { return nil }
+        return make(
+            kind: .song,
+            rawID: track.id.rawValue,
+            playParameterCandidates: playParameterCandidates(from: track.playParameters),
+            title: track.title,
+            artist: track.artistName,
+            album: track.albumTitle ?? "",
+            artworkURLString: artworkURLString(track.artwork),
+            duration: track.duration
+        )
+    }
+
+    static func make(album: Album) -> LocalServiceAppleMusicPlayable? {
+        make(
+            kind: .album,
+            rawID: album.id.rawValue,
+            playParameterCandidates: playParameterCandidates(from: album.playParameters),
+            title: album.title,
+            artist: album.artistName,
+            album: album.title,
+            artworkURLString: artworkURLString(album.artwork),
+            duration: nil
+        )
+    }
+
+    static func make(artist: Artist) -> LocalServiceAppleMusicPlayable? {
+        make(
+            kind: .artist,
+            rawID: artist.id.rawValue,
+            playParameterCandidates: [],
+            title: artist.name,
+            artist: "",
+            album: "",
+            artworkURLString: artworkURLString(artist.artwork),
+            duration: nil
+        )
+    }
+
+    static func make(playlist: Playlist) -> LocalServiceAppleMusicPlayable? {
+        make(
+            kind: .playlist,
+            rawID: playlist.id.rawValue,
+            playParameterCandidates: playParameterCandidates(from: playlist.playParameters),
+            title: playlist.name,
+            artist: playlist.curatorName ?? "",
+            album: "",
+            artworkURLString: artworkURLString(playlist.artwork),
+            duration: nil
+        )
+    }
+
+    static func make(station: Station) -> LocalServiceAppleMusicPlayable? {
+        make(
+            kind: .station,
+            rawID: station.id.rawValue,
+            playParameterCandidates: playParameterCandidates(from: station.playParameters),
+            title: station.name,
+            artist: "",
+            album: "",
+            artworkURLString: artworkURLString(station.artwork),
+            duration: nil
+        )
+    }
+
+    static func make(recentlyPlayed item: RecentlyPlayedMusicItem) -> LocalServiceAppleMusicPlayable? {
+        switch item {
+        case .album(let album):
+            return make(album: album)
+        case .playlist(let playlist):
+            return make(playlist: playlist)
+        case .station(let station):
+            return make(station: station)
+        @unknown default:
+            return nil
+        }
+    }
+
+    static func make(recommendation item: MusicPersonalRecommendation.Item) -> LocalServiceAppleMusicPlayable? {
+        switch item {
+        case .album(let album):
+            return make(album: album)
+        case .playlist(let playlist):
+            return make(playlist: playlist)
+        case .station(let station):
+            return make(station: station)
+        @unknown default:
+            return nil
+        }
+    }
+
+    private static func firstCatalogID(in candidates: [String], kind: Kind) -> String? {
+        for candidate in candidates {
+            if let normalized = normalizedCatalogID(candidate, kind: kind) {
+                return normalized
+            }
+        }
+        return nil
+    }
+
+    private static func normalizedCatalogID(_ value: String, kind: Kind) -> String? {
+        var candidate = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !candidate.isEmpty else { return nil }
+        candidate = candidate.removingPercentEncoding ?? candidate
+
+        switch kind {
+        case .song:
+            return SonosAppleMusicTrackResolver.storeID(fromObjectID: candidate)
+        case .album, .artist:
+            return numericCatalogID(from: candidate, namespaces: namespaces(for: kind))
+        case .playlist:
+            if candidate.hasPrefix("pl.") {
+                return candidate
+            }
+            return namespacedSuffix(from: candidate, namespaces: namespaces(for: kind)) {
+                $0.hasPrefix("pl.") || $0.allSatisfy(\.isNumber)
+            }
+        case .station:
+            if candidate.hasPrefix("radio:") {
+                return candidate
+            }
+            if candidate.hasPrefix("ra.") {
+                return "radio:\(candidate)"
+            }
+            return candidate.contains("library") ? nil : candidate
+        }
+    }
+
+    private static func numericCatalogID(from value: String, namespaces: Set<String>) -> String? {
+        if value.allSatisfy(\.isNumber) {
+            return value
+        }
+        return namespacedSuffix(from: value, namespaces: namespaces) {
+            $0.allSatisfy(\.isNumber)
+        }
+    }
+
+    private static func namespacedSuffix(
+        from value: String,
+        namespaces: Set<String>,
+        isValid: (String) -> Bool
+    ) -> String? {
+        let parts = value.split(separator: ":", omittingEmptySubsequences: true).map(String.init)
+        guard parts.count >= 2,
+              let namespace = parts.dropLast().last?.lowercased(),
+              namespaces.contains(namespace) else {
+            return nil
+        }
+        let suffix = parts.last?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return !suffix.isEmpty && isValid(suffix) ? suffix : nil
+    }
+
+    private static func namespaces(for kind: Kind) -> Set<String> {
+        switch kind {
+        case .song: return ["song", "songs", "track", "tracks"]
+        case .album: return ["album", "albums"]
+        case .artist: return ["artist", "artists"]
+        case .playlist: return ["playlist", "playlists"]
+        case .station: return ["station", "stations", "radio"]
+        }
+    }
+
+    private static func playParameterCandidates(from playParameters: PlayParameters?) -> [String] {
+        guard let playParameters,
+              let data = try? JSONEncoder().encode(playParameters),
+              let object = try? JSONSerialization.jsonObject(with: data) else {
+            return []
+        }
+
+        var preferred: [String] = []
+        var fallback: [String] = []
+        collectStringCandidates(from: object, preferred: &preferred, fallback: &fallback)
+        return deduped(preferred + fallback)
+    }
+
+    private static func collectStringCandidates(
+        from object: Any,
+        key: String? = nil,
+        preferred: inout [String],
+        fallback: inout [String]
+    ) {
+        if let dictionary = object as? [String: Any] {
+            for (childKey, value) in dictionary {
+                collectStringCandidates(
+                    from: value,
+                    key: childKey,
+                    preferred: &preferred,
+                    fallback: &fallback)
+            }
+            return
+        }
+
+        if let array = object as? [Any] {
+            for value in array {
+                collectStringCandidates(from: value, preferred: &preferred, fallback: &fallback)
+            }
+            return
+        }
+
+        guard let value = object as? String else { return }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+
+        if isPreferredCatalogKey(key) {
+            preferred.append(trimmed)
+        } else {
+            fallback.append(trimmed)
+        }
+    }
+
+    private static func isPreferredCatalogKey(_ key: String?) -> Bool {
+        guard let key else { return false }
+        let normalized = key
+            .replacingOccurrences(of: "_", with: "")
+            .replacingOccurrences(of: "-", with: "")
+            .lowercased()
+        return normalized.contains("catalog") || normalized == "id" || normalized == "adamid"
+    }
+
+    private static func deduped(_ values: [String]) -> [String] {
+        var seen: Set<String> = []
+        var result: [String] = []
+        for value in values where seen.insert(value).inserted {
+            result.append(value)
+        }
+        return result
+    }
+
+    private static func artworkURLString(_ artwork: Artwork?) -> String? {
+        artwork?.url(width: 400, height: 400)?.absoluteString
+    }
+}

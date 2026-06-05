@@ -14,6 +14,10 @@ struct ContentView: View {
                 SearchView(manager: manager, searchManager: searchManager)
                     .miniPlayerLegacyInsetIfNeeded(manager: manager)
             }
+            Tab("Local Service", systemImage: "music.note.house") {
+                LocalLibraryView(manager: manager, searchManager: searchManager)
+                    .miniPlayerLegacyInsetIfNeeded(manager: manager)
+            }
             Tab("Settings", systemImage: "gearshape") {
                 SettingsView(manager: manager, searchManager: searchManager)
                     .miniPlayerLegacyInsetIfNeeded(manager: manager)

@@ -1064,8 +1064,37 @@ final class SearchManager {
                 return
             }
 
+            lastSearchQuery = query
+            serviceDetailResults = [:]
+
+            var results: [ServiceSearchResult] = []
+            var cloudServiceIds = serviceIds
+            let appleMusicServiceIds = activeAppleMusicServiceIds(in: serviceIds)
+            if let appleMusicAccount = appleMusicAccountForSearch(in: serviceIds) {
+                do {
+                    if let appleMusicResult = try await appleMusicSearchResult(
+                        term: query,
+                        account: appleMusicAccount,
+                        limit: 8
+                    ), !appleMusicResult.items.isEmpty {
+                        results.append(appleMusicResult)
+                        cloudServiceIds.removeAll { appleMusicServiceIds.contains($0) }
+                    }
+                } catch {
+                    SonosLog.error(.search, "MusicKit Apple Music search failed: \(error)")
+                }
+            }
+
             guard let token = await SonosAuth.shared.validAccessToken(),
                   let householdId = SonosAuth.shared.householdId else {
+                if !results.isEmpty {
+                    SonosLog.info(.search, "Showing MusicKit Apple Music results without Cloud auth")
+                    errorMessage = nil
+                    searchResults = results
+                    isSearching = false
+                    return
+                }
+
                 SonosLog.info(.search, "No Cloud auth for search")
                 errorMessage = SonosCloudError.unauthorized.localizedDescription
                 searchResults = []
@@ -1073,33 +1102,31 @@ final class SearchManager {
                 return
             }
 
-            lastSearchQuery = query
-            serviceDetailResults = [:]
-
             do {
-                let response = try await searchCatalogWithTokenRefresh(
-                    token: token, householdId: householdId,
-                    term: query, serviceIds: serviceIds)
+                if !cloudServiceIds.isEmpty {
+                    let response = try await searchCatalogWithTokenRefresh(
+                        token: token, householdId: householdId,
+                        term: query, serviceIds: cloudServiceIds)
 
-                guard !Task.isCancelled else { return }
+                    guard !Task.isCancelled else { return }
 
-                var results: [ServiceSearchResult] = []
-                for serviceResult in response.services ?? [] {
-                    guard let resources = serviceResult.resources, !resources.isEmpty else { continue }
+                    for serviceResult in response.services ?? [] {
+                        guard let resources = serviceResult.resources, !resources.isEmpty else { continue }
 
-                    let serviceName = resources.first?.id?.serviceName
-                        ?? accountName(for: serviceResult.serviceId)
-                        ?? "Unknown"
+                        let serviceName = resources.first?.id?.serviceName
+                            ?? accountName(for: serviceResult.serviceId)
+                            ?? "Unknown"
 
-                    let items = resources.compactMap { resource -> BrowseItem? in
-                        convertToBrowseItem(resource, serviceId: serviceResult.serviceId,
-                                            accountId: serviceResult.accountId)
-                    }
+                        let items = resources.compactMap { resource -> BrowseItem? in
+                            convertToBrowseItem(resource, serviceId: serviceResult.serviceId,
+                                                accountId: serviceResult.accountId)
+                        }
 
-                    if !items.isEmpty {
-                        let sid = serviceResult.serviceId ?? UUID().uuidString
-                        results.append(ServiceSearchResult(
-                            id: sid, serviceName: serviceName, items: items))
+                        if !items.isEmpty {
+                            let sid = serviceResult.serviceId ?? UUID().uuidString
+                            results.append(ServiceSearchResult(
+                                id: sid, serviceName: serviceName, items: items))
+                        }
                     }
                 }
 
@@ -1112,8 +1139,13 @@ final class SearchManager {
             } catch {
                 if !Task.isCancelled {
                     SonosLog.error(.search, "Cloud search failed: \(error)")
-                    errorMessage = error.localizedDescription
-                    searchResults = []
+                    if results.isEmpty {
+                        errorMessage = error.localizedDescription
+                        searchResults = []
+                    } else {
+                        errorMessage = nil
+                        searchResults = results
+                    }
                 }
             }
 
@@ -1129,12 +1161,29 @@ final class SearchManager {
               !lastSearchQuery.isEmpty else { return }
 
         guard let account = linkedAccounts.first(where: { $0.serviceId == serviceId }),
-              let aid = account.accountId,
-              let token = await SonosAuth.shared.validAccessToken(),
-              let householdId = SonosAuth.shared.householdId else { return }
+              let aid = account.accountId else { return }
 
         isLoadingServiceDetail = true
         defer { isLoadingServiceDetail = false }
+
+        if isAppleMusicAccount(account) {
+            do {
+                if let result = try await appleMusicSearchResult(
+                    term: lastSearchQuery,
+                    account: account,
+                    limit: 24
+                ), !result.items.isEmpty {
+                    serviceDetailResults[serviceId] = result
+                    errorMessage = nil
+                    return
+                }
+            } catch {
+                SonosLog.error(.search, "MusicKit detail search failed for Apple Music: \(error)")
+            }
+        }
+
+        guard let token = await SonosAuth.shared.validAccessToken(),
+              let householdId = SonosAuth.shared.householdId else { return }
 
         do {
             let response = try await searchServiceWithTokenRefresh(
@@ -1160,6 +1209,164 @@ final class SearchManager {
     private func accountName(for serviceId: String?) -> String? {
         guard let sid = serviceId else { return nil }
         return linkedAccounts.first { $0.serviceId == sid }?.displayName
+    }
+
+    private func activeAppleMusicServiceIds(in serviceIds: [String]) -> Set<String> {
+        let activeIds = Set(serviceIds)
+        return Set(linkedAccounts.compactMap { account in
+            guard let serviceId = account.serviceId,
+                  activeIds.contains(serviceId),
+                  isAppleMusicAccount(account) else { return nil }
+            return serviceId
+        })
+    }
+
+    private func appleMusicAccountForSearch(
+        in serviceIds: [String]
+    ) -> SonosCloudAPI.CloudMusicServiceAccount? {
+        let activeIds = Set(serviceIds)
+        return linkedAccounts.first { account in
+            guard let serviceId = account.serviceId else { return false }
+            return activeIds.contains(serviceId) && isAppleMusicAccount(account)
+        }
+    }
+
+    private func appleMusicSearchResult(
+        term: String,
+        account: SonosCloudAPI.CloudMusicServiceAccount,
+        limit: Int
+    ) async throws -> ServiceSearchResult? {
+        guard let serviceId = account.serviceId,
+              let accountId = account.accountId else { return nil }
+
+        let start = Date()
+        let catalogItems = try await AppleMusicCatalogSearchClient.shared.search(
+            term: term,
+            limit: limit)
+        let items = catalogItems.map { catalogItem -> BrowseItem in
+            let uri = buildPlayableURI(
+                objectId: catalogItem.sonosPlayableObjectID,
+                serviceId: serviceId,
+                accountId: accountId,
+                type: catalogItem.type.cloudType,
+                mimeType: catalogItem.sonosPlayableMimeType)
+            return catalogItem.browseItem(
+                localServiceId: cloudToLocalSid[serviceId],
+                uri: uri)
+        }
+        let elapsed = Int(Date().timeIntervalSince(start) * 1000)
+        SonosLog.debug(
+            .search,
+            "MusicKit Apple Music search '\(term)' → \(items.count) results in \(elapsed)ms")
+
+        return ServiceSearchResult(
+            id: serviceId,
+            serviceName: account.displayName,
+            items: items)
+    }
+
+    func playLocalAppleMusic(
+        _ playable: LocalServiceAppleMusicPlayable,
+        manager: SonosManager
+    ) async -> Bool {
+        configure(speakerIP: manager.selectedSpeaker?.playbackIP)
+
+        guard manager.selectedSpeaker != nil else {
+            errorMessage = HandoffTransferError.noSelectedSpeaker.localizedDescription
+            return false
+        }
+
+        if manager.transportBackend == .unknown {
+            _ = await manager.probeBackend()
+        }
+
+        if manager.transportBackend == .cloud {
+            errorMessage = SonosControlError
+                .unsupportedInCloudMode(feature: "Playing Local Service items")
+                .localizedDescription
+            return false
+        }
+
+        if !hasProbed {
+            await probeLinkedServices()
+        }
+        await refreshServiceIdMappingIfNeeded()
+
+        guard let account = linkedAccounts.first(where: { isAppleMusicAccount($0) }),
+              let serviceId = account.serviceId,
+              let accountId = account.accountId else {
+            errorMessage = LocalServiceSonosPlaybackError.appleMusicAccountMissing.localizedDescription
+            return false
+        }
+
+        guard cloudToLocalSid[serviceId] != nil else {
+            errorMessage = LocalServiceSonosPlaybackError.localServiceMappingMissing.localizedDescription
+            return false
+        }
+
+        guard let item = localServiceBrowseItem(
+            for: playable,
+            cloudServiceId: serviceId,
+            accountId: accountId
+        ), item.uri?.isEmpty == false else {
+            errorMessage = LocalServiceSonosPlaybackError.noPlayableCatalogID.localizedDescription
+            return false
+        }
+
+        return await playNowInternal(item: item, manager: manager)
+    }
+
+    private func localServiceBrowseItem(
+        for playable: LocalServiceAppleMusicPlayable,
+        cloudServiceId: String,
+        accountId: String
+    ) -> BrowseItem? {
+        var item: BrowseItem
+        switch playable.kind {
+        case .song:
+            item = makeTrackItem(
+                objectId: playable.sonosObjectID,
+                title: playable.title,
+                artist: playable.artist,
+                album: playable.album,
+                artURL: playable.artworkURLString,
+                mimeType: playable.sonosMimeType,
+                cloudServiceId: cloudServiceId,
+                accountId: accountId)
+        case .album:
+            item = makeAlbumItem(
+                objectId: playable.sonosObjectID,
+                title: playable.title,
+                artist: playable.artist,
+                artURL: playable.artworkURLString,
+                cloudServiceId: cloudServiceId,
+                accountId: accountId)
+        case .artist:
+            item = makeArtistItem(
+                objectId: playable.sonosObjectID,
+                name: playable.title,
+                artURL: playable.artworkURLString,
+                cloudServiceId: cloudServiceId,
+                accountId: accountId)
+        case .playlist:
+            item = makePlaylistItem(
+                objectId: playable.sonosObjectID,
+                title: playable.title,
+                artist: playable.artist,
+                artURL: playable.artworkURLString,
+                cloudServiceId: cloudServiceId,
+                accountId: accountId)
+        case .station:
+            item = makeStationItem(
+                objectId: playable.sonosObjectID,
+                title: playable.title,
+                artistName: playable.artist,
+                artURL: playable.artworkURLString,
+                cloudServiceId: cloudServiceId,
+                accountId: accountId)
+        }
+        item.duration = playable.duration ?? 0
+        return item
     }
 
     /// Convert a Cloud API resource into a BrowseItem for playback.
@@ -2827,6 +3034,43 @@ final class SearchManager {
     /// entries, and we must not conflate them.
     func isFavorited(_ item: BrowseItem) -> Bool {
         findFavorite(matching: item) != nil
+    }
+
+    func appleMusicFavoriteResource(for item: BrowseItem) -> AppleMusicFavoriteResource? {
+        guard isAppleMusicItem(item) else { return nil }
+        let resolved = browseItemWithResolvedFavoriteURI(item) ?? item
+        return AppleMusicFavoriteResource.fromBrowseItem(resolved)
+    }
+
+    func appleMusicFavoriteStatus(for resource: AppleMusicFavoriteResource) async throws -> Bool {
+        try await AppleMusicFavoritesClient.shared.favoriteStatus(for: resource)
+    }
+
+    func addToAppleMusicFavorites(resource: AppleMusicFavoriteResource) async throws {
+        try await AppleMusicFavoritesClient.shared.addToFavorites(resource)
+    }
+
+    private func isAppleMusicItem(_ item: BrowseItem) -> Bool {
+        guard AppleMusicFavoriteResourceType(cloudType: item.cloudType) != nil else {
+            return false
+        }
+
+        if let cloudId = cloudServiceId(forFavorite: item),
+           let account = linkedAccounts.first(where: { $0.serviceId == cloudId }) {
+            return isAppleMusicAccount(account)
+        }
+
+        if let hint = serviceDisplayHint(forFavorite: item),
+           PlaybackSource.from(serviceName: hint) == .appleMusic {
+            return true
+        }
+
+        if let localSid = item.serviceId,
+           let service = musicServices.first(where: { $0.id == localSid }) {
+            return PlaybackSource.from(serviceName: service.name) == .appleMusic
+        }
+
+        return false
     }
 
     /// Best-effort canonical service hint for a favorite or browse item,

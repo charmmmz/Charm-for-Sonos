@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import http from 'node:http';
 import { test } from 'node:test';
 import { PNG } from 'pngjs';
 
@@ -23,6 +24,17 @@ test('Live Activity content state embeds fetched album art as a small base64 JPE
   assert.ok(thumbnail.length <= 15 * 1024);
 });
 
+test('Live Activity content state derives a dominant theme color from fetched album art', async () => {
+  const state = await buildLiveActivityContentState(snapshot({
+    albumArtUri: 'http://192.168.50.25:1400/getaa?s=1',
+  }), {
+    fetchAlbumArt: async () => makeSolidPng(96, 96),
+  });
+
+  assert.match(state.dominantColorHex ?? '', /^#[0-9A-F]{6}$/);
+  assert.notEqual(state.dominantColorHex, '#FFFFFF');
+});
+
 test('Live Activity content hash changes when album art becomes available', () => {
   const withoutArt = hashLiveActivityContentState({
     ...baseContentState(),
@@ -34,6 +46,56 @@ test('Live Activity content hash changes when album art becomes available', () =
   });
 
   assert.notEqual(withoutArt, withArt);
+});
+
+test('Live Activity content hash changes when the dominant theme color changes', () => {
+  const withoutColor = hashLiveActivityContentState({
+    ...baseContentState(),
+    dominantColorHex: null,
+  });
+  const withColor = hashLiveActivityContentState({
+    ...baseContentState(),
+    dominantColorHex: '#3366CC',
+  });
+
+  assert.notEqual(withoutColor, withColor);
+});
+
+test('Live Activity album art extraction retries after a transient fetch failure', async () => {
+  let requestCount = 0;
+  const server = http.createServer((_req, res) => {
+    requestCount += 1;
+    if (requestCount === 1) {
+      res.writeHead(503);
+      res.end('not ready');
+      return;
+    }
+
+    const image = makeSolidPng(96, 96);
+    res.writeHead(200, {
+      'content-type': 'image/png',
+      'content-length': image.length,
+    });
+    res.end(image);
+  });
+
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  assert(address && typeof address === 'object');
+  const albumArtUri = `http://127.0.0.1:${address.port}/getaa?s=transient`;
+
+  try {
+    const failedState = await buildLiveActivityContentState(snapshot({ albumArtUri }));
+    const recoveredState = await buildLiveActivityContentState(snapshot({ albumArtUri }));
+
+    assert.equal(failedState.albumArtThumbnail, null);
+    assert.equal(failedState.dominantColorHex, null);
+    assert.ok(recoveredState.albumArtThumbnail);
+    assert.match(recoveredState.dominantColorHex ?? '', /^#[0-9A-F]{6}$/);
+    assert.equal(requestCount, 2);
+  } finally {
+    await new Promise<void>(resolve => server.close(() => resolve()));
+  }
 });
 
 function snapshot(overrides: Partial<SonosGroupSnapshot> = {}): SonosGroupSnapshot {
