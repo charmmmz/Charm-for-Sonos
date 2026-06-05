@@ -3,6 +3,15 @@ import { EventEmitter } from 'node:events';
 import type { Logger } from 'pino';
 import type { SonosGroupSnapshot } from './types.js';
 
+export type SonosSnapshotChangeTrigger =
+  | 'sonos-change'
+  | 'periodic-refresh'
+  | 'initial-prime';
+
+export interface SonosSnapshotChangeContext {
+  trigger: SonosSnapshotChangeTrigger;
+}
+
 /// Wraps @svrooij/sonos to give us a single clean event stream:
 ///   `change` (groupId, snapshot)
 /// fired whenever any meaningful field shifts on any coordinator. The
@@ -36,7 +45,7 @@ export class SonosBridge extends EventEmitter {
       this.attachDeviceListeners(device);
       // Prime the snapshot table so a register-activity coming in immediately
       // can ship something useful even before the first Sonos event fires.
-      void this.refreshSnapshot(device).catch(err =>
+      void this.refreshSnapshot(device, 'initial-prime').catch(err =>
         this.log.warn({ err, device: device.Name }, 'initial snapshot fetch failed'),
       );
     }
@@ -46,7 +55,7 @@ export class SonosBridge extends EventEmitter {
     // but rare hiccups aren't unheard of).
     this.periodicHandle = setInterval(() => {
       for (const device of this.manager.Devices) {
-        void this.refreshSnapshot(device).catch(() => undefined);
+        void this.refreshSnapshot(device, 'periodic-refresh').catch(() => undefined);
       }
     }, 60_000);
   }
@@ -144,7 +153,10 @@ export class SonosBridge extends EventEmitter {
     }
   }
 
-  private async refreshSnapshot(device: any): Promise<void> {
+  private async refreshSnapshot(
+    device: any,
+    trigger: SonosSnapshotChangeTrigger = 'sonos-change',
+  ): Promise<void> {
     let groupId: string | null = null;
     let refreshSequence = 0;
     try {
@@ -169,13 +181,27 @@ export class SonosBridge extends EventEmitter {
       const durationSeconds = parseDuration(position.TrackDuration ?? '00:00:00');
       const metadata = trackMetadataFromMetadata(position.TrackMetaData);
 
-      // sonos-ts decodes the `currentTrack` event payload into structured
-      // fields, but GetPositionInfo gives us back the raw DIDL — title /
-      // artist / album live inside, so we either parse the DIDL or use the
-      // device's lastTrack cache. The lastTrack cache is friendlier.
-      const trackTitle = firstNonEmpty(coordinator.CurrentTrack?.Title, device.CurrentTrack?.Title, metadata.title);
-      const artist = firstNonEmpty(coordinator.CurrentTrack?.Artist, device.CurrentTrack?.Artist, metadata.artist);
-      const album = firstNonEmpty(coordinator.CurrentTrack?.Album, device.CurrentTrack?.Album, metadata.album);
+      // Prefer GetPositionInfo's parsed DIDL because radio streams put the
+      // current song in r:streamContent while sonos-ts may cache that raw
+      // `TYPE=SNG|TITLE ...` payload as Artist.
+      const trackTitle = firstMeaningfulMetadata(
+        'title',
+        metadata.title,
+        coordinator.CurrentTrack?.Title,
+        device.CurrentTrack?.Title,
+      );
+      const artist = firstMeaningfulMetadata(
+        'artist',
+        metadata.artist,
+        coordinator.CurrentTrack?.Artist,
+        device.CurrentTrack?.Artist,
+      );
+      const album = firstMeaningfulMetadata(
+        'album',
+        metadata.album,
+        coordinator.CurrentTrack?.Album,
+        device.CurrentTrack?.Album,
+      );
       const albumArtUri = absoluteAlbumArtUri(
         coordinator.CurrentTrack?.AlbumArtUri
           ?? coordinator.CurrentTrack?.AlbumArtURI
@@ -203,15 +229,12 @@ export class SonosBridge extends EventEmitter {
         }),
         positionSeconds,
         durationSeconds,
-        // Manager doesn't always know the live group size from here; default 1
-        // and let the iOS app continue to drive groupMemberCount for the
-        // local-update path. We can refine in a Phase 1.5 if needed.
-        groupMemberCount: 1,
+        groupMemberCount: this.groupMemberCountForCoordinator(coordinator, resolvedGroupId),
         sampledAt: new Date(),
       };
 
       this.snapshots.set(resolvedGroupId, snapshot);
-      this.emit('change', snapshot);
+      this.emit('change', snapshot, { trigger } satisfies SonosSnapshotChangeContext);
     } catch (err) {
       if (groupId && !this.isCurrentRefresh(groupId, refreshSequence)) return;
       this.log.warn(
@@ -229,6 +252,47 @@ export class SonosBridge extends EventEmitter {
 
   private isCurrentRefresh(groupId: string, sequence: number): boolean {
     return this.refreshSequences.get(groupId) === sequence;
+  }
+
+  private groupMemberCountForCoordinator(coordinator: any, groupId: string): number {
+    let devices: any[] = [];
+    try {
+      devices = this.manager.Devices as any[];
+    } catch {
+      devices = [coordinator];
+    }
+
+    const coordinatorHost = firstNonEmpty(coordinator.Host, groupId);
+    const coordinatorUuid = firstNonEmpty(coordinator.Uuid);
+    let count = 0;
+
+    for (const device of devices) {
+      if (!device || typeof device !== 'object' || isInvisibleDevice(device)) continue;
+      const deviceCoordinator = (device as Record<string, unknown>).Coordinator ?? device;
+      const candidateCoordinator = typeof deviceCoordinator === 'object' && deviceCoordinator
+        ? deviceCoordinator as Record<string, unknown>
+        : {};
+      const deviceRecord = device as Record<string, unknown>;
+
+      const candidateCoordinatorHost = firstNonEmpty(
+        candidateCoordinator.Host as string,
+        deviceRecord.CoordinatorHost as string,
+      );
+      const candidateCoordinatorUuid = firstNonEmpty(candidateCoordinator.Uuid as string);
+      const deviceHost = firstNonEmpty(deviceRecord.Host as string);
+      const deviceUuid = firstNonEmpty(deviceRecord.Uuid as string);
+
+      if (coordinatorHost && (candidateCoordinatorHost === coordinatorHost || deviceHost === coordinatorHost)) {
+        count += 1;
+      } else if (
+        coordinatorUuid
+        && (candidateCoordinatorUuid === coordinatorUuid || deviceUuid === coordinatorUuid)
+      ) {
+        count += 1;
+      }
+    }
+
+    return Math.max(1, count);
   }
 }
 
@@ -304,24 +368,29 @@ export function trackMetadataFromMetadata(metadata: unknown): SonosTrackMetadata
     return trackMetadataFromTrackObject(metadata);
   }
 
-  return {
+  const baseMetadata = {
     title: xmlTagValue(metadata, 'dc:title'),
     artist: xmlTagValue(metadata, 'dc:creator') ?? xmlTagValue(metadata, 'upnp:artist'),
     album: xmlTagValue(metadata, 'upnp:album'),
     albumArtUri: xmlTagValue(metadata, 'upnp:albumArtURI'),
   };
+  return reconcileRadioStreamContent(baseMetadata, xmlTagValue(metadata, 'r:streamContent'));
 }
 
 function trackMetadataFromTrackObject(metadata: unknown): SonosTrackMetadata {
   if (!metadata || typeof metadata !== 'object') return emptyTrackMetadata();
   const track = metadata as Record<string, unknown>;
 
-  return {
+  const baseMetadata = {
     title: firstObjectString(track.Title, track.title),
     artist: firstObjectString(track.Artist, track.artist, track.Creator, track.creator),
     album: firstObjectString(track.Album, track.album),
     albumArtUri: firstObjectString(track.AlbumArtUri, track.AlbumArtURI, track.albumArtUri),
   };
+  return reconcileRadioStreamContent(
+    baseMetadata,
+    firstObjectString(track.StreamContent, track.streamContent, track.StreamInfo, track.streamInfo),
+  );
 }
 
 function emptyTrackMetadata(): SonosTrackMetadata {
@@ -336,6 +405,96 @@ function emptyTrackMetadata(): SonosTrackMetadata {
 function normalizedMetadata(value: string | null | undefined): string {
   const normalized = (value ?? '').trim().toLowerCase();
   return normalized === 'unknown' ? '' : normalized;
+}
+
+function reconcileRadioStreamContent(
+  metadata: SonosTrackMetadata,
+  streamContent: string | null,
+): SonosTrackMetadata {
+  const decoded = decodeXmlEntities(streamContent ?? '').trim();
+  if (!decoded) return metadata;
+
+  const fields = radioStreamContentFields(decoded);
+  if (fields.title || fields.artist || fields.album) {
+    return {
+      ...metadata,
+      title: fields.title ?? metadata.title,
+      artist: fields.artist ?? metadata.artist,
+      album: fields.album ?? metadata.album,
+    };
+  }
+
+  const separator = decoded.indexOf(' - ');
+  if (separator > 0) {
+    const artist = decoded.slice(0, separator).trim();
+    const title = decoded.slice(separator + 3).trim();
+    return {
+      ...metadata,
+      title: title || metadata.title,
+      artist: artist || metadata.artist,
+    };
+  }
+
+  if (!normalizedMetadata(metadata.artist)) {
+    return {
+      ...metadata,
+      title: decoded,
+    };
+  }
+
+  return metadata;
+}
+
+function radioStreamContentFields(streamContent: string): Partial<Pick<SonosTrackMetadata, 'title' | 'artist' | 'album'>> {
+  const fields: Partial<Pick<SonosTrackMetadata, 'title' | 'artist' | 'album'>> = {};
+  for (const segment of streamContent.split('|')) {
+    const trimmed = segment.trim();
+    const upper = trimmed.toUpperCase();
+    for (const [key, property] of [
+      ['TITLE', 'title'],
+      ['ARTIST', 'artist'],
+      ['ALBUM', 'album'],
+    ] as const) {
+      const spacePrefix = `${key} `;
+      const equalsPrefix = `${key}=`;
+      let value: string | null = null;
+      if (upper.startsWith(spacePrefix)) {
+        value = trimmed.slice(spacePrefix.length).trim();
+      } else if (upper.startsWith(equalsPrefix)) {
+        value = trimmed.slice(equalsPrefix.length).trim();
+      }
+      if (value) fields[property] = value;
+    }
+  }
+  return fields;
+}
+
+function firstMeaningfulMetadata(
+  field: 'title' | 'artist' | 'album',
+  ...values: Array<string | null | undefined>
+): string {
+  for (const value of values) {
+    const stringValue = firstObjectString(value);
+    if (!stringValue || !normalizedMetadata(stringValue)) continue;
+    const streamFields = looksLikeRadioStreamContent(stringValue)
+      ? radioStreamContentFields(stringValue)
+      : {};
+    const streamFieldValue = streamFields[field];
+    if (streamFieldValue) return streamFieldValue;
+    if (looksLikeRadioStreamContent(stringValue)) continue;
+    return stringValue;
+  }
+  const fallback = firstNonEmpty(...values);
+  return looksLikeRadioStreamContent(fallback) ? '' : fallback;
+}
+
+function isInvisibleDevice(device: Record<string, unknown>): boolean {
+  return device.Invisible === true || device.invisible === true || device.isInvisible === true;
+}
+
+function looksLikeRadioStreamContent(value: string): boolean {
+  const upper = value.toUpperCase();
+  return upper.startsWith('TYPE=') || upper.includes('|TITLE ') || upper.includes('|TITLE=');
 }
 
 function xmlTagValue(xml: string, tag: string): string | null {

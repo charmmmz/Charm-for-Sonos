@@ -389,8 +389,29 @@ final class SonosManager {
     }
 
     func selectSpeaker(_ speaker: SonosPlayer) async {
+        let previousLiveActivityGroupId = liveActivityGroupId()
+        let previousSpeakerName = selectedSpeaker?.name
         selectedSpeaker = speaker
         syncSpeakerToStorage(speaker)
+        let nextLiveActivityGroupId = liveActivityGroupId()
+
+        if Self.shouldRecreateLiveActivityForSpeakerChange(
+            currentActivityExists: currentActivity != nil,
+            previousGroupId: previousLiveActivityGroupId,
+            nextGroupId: nextLiveActivityGroupId
+        ) {
+            logLiveActivity(action: "recreate-request",
+                            activityID: currentActivity?.id,
+                            mode: currentActivityUsesRelay ? "relay-token" : "local",
+                            reason: "selected-speaker-changed",
+                            groupId: nextLiveActivityGroupId,
+                            extra: [
+                                "oldGroupId=\(Self.liveActivityLogValue(previousLiveActivityGroupId ?? "nil"))",
+                                "oldSpeaker=\(Self.liveActivityLogValue(previousSpeakerName ?? "nil"))",
+                                "newSpeaker=\(Self.liveActivityLogValue(speaker.name))"
+                            ])
+            stopLiveActivity()
+        }
 
         albumArtTask?.cancel()
         lastAlbumArtURL = nil
@@ -2347,6 +2368,19 @@ final class SonosManager {
         relayWriterReady: Bool
     ) -> Bool {
         !usesRelay || !relayWriterReady
+    }
+
+    nonisolated static func shouldRecreateLiveActivityForSpeakerChange(
+        currentActivityExists: Bool,
+        previousGroupId: String?,
+        nextGroupId: String?
+    ) -> Bool {
+        guard currentActivityExists,
+              let previousGroupId,
+              let nextGroupId else {
+            return false
+        }
+        return previousGroupId != nextGroupId
     }
 
     private func logLiveActivity(action: String,

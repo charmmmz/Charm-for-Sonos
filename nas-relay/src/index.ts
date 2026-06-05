@@ -3,7 +3,7 @@ import pino from 'pino';
 import pinoHttp from 'pino-http';
 import path from 'node:path';
 
-import { SonosBridge } from './sonos.js';
+import { SonosBridge, type SonosSnapshotChangeContext } from './sonos.js';
 import { createInternalSonosRouter, internalAuthMiddleware } from './internalSonosRoutes.js';
 import { ApnsClient } from './apns.js';
 import { TokenStore } from './tokenStore.js';
@@ -21,6 +21,10 @@ import {
   buildLiveActivityContentState,
   hashLiveActivityContentState,
 } from './liveActivityContentState.js';
+import {
+  shouldForceLiveActivityCalibration,
+  shouldPushLiveActivityUpdate,
+} from './liveActivityPushPolicy.js';
 import type { LiveActivityContentState, RegisterRequest, SonosGroupSnapshot } from './types.js';
 
 const log = pino({
@@ -78,24 +82,29 @@ async function main(): Promise<void> {
   await sonos.start(SEED_IP!);
 
   // ---- snapshot → APNs pipeline ----------------------------------------
-  sonos.on('change', async (snap: SonosGroupSnapshot) => {
-    if (!cs2Lighting.shouldDeferAlbumAmbience()) {
-      hueAmbience.receiveSnapshot(snap);
-    }
+  type LiveActivityPushTrigger = SonosSnapshotChangeContext['trigger'] | 'register-initial';
 
+  async function pushLiveActivitySnapshot(
+    snap: SonosGroupSnapshot,
+    trigger: LiveActivityPushTrigger,
+    options: { force?: boolean; logNoTokens?: boolean } = {},
+  ): Promise<void> {
+    const force = options.force === true;
     const matching = tokens.forGroup(snap.groupId);
     if (matching.length === 0) {
-      log.info(
-        {
-          source: 'relay',
-          action: 'skip',
-          trigger: 'sonos-change',
-          reason: 'no-registered-tokens',
-          groupId: snap.groupId,
-          snapshot: summarizeSnapshot(snap),
-        },
-        'live_activity',
-      );
+      if (options.logNoTokens !== false) {
+        log.info(
+          {
+            source: 'relay',
+            action: 'skip',
+            trigger,
+            reason: 'no-registered-tokens',
+            groupId: snap.groupId,
+            snapshot: summarizeSnapshot(snap),
+          },
+          'live_activity',
+        );
+      }
       return;
     }
 
@@ -105,7 +114,8 @@ async function main(): Promise<void> {
       {
         source: 'relay',
         action: 'state-built',
-        trigger: 'sonos-change',
+        trigger,
+        force,
         groupId: snap.groupId,
         registeredTokens: matching.length,
         hash,
@@ -114,15 +124,16 @@ async function main(): Promise<void> {
       'live_activity',
     );
 
-    // Skip no-op pushes — a single Sonos event often fires with identical
-    // payload right after we just refreshed (eventing + polling overlap).
-    const targets = matching.filter(t => t.lastSentHash !== hash);
+    // Skip no-op pushes for normal Sonos events. Periodic refreshes are a
+    // deliberate low-frequency calibration path for position/timerInterval.
+    const targets = matching.filter(t => shouldPushLiveActivityUpdate(t, hash, { force }));
     if (targets.length === 0) {
       log.info(
         {
           source: 'relay',
           action: 'skip',
-          trigger: 'sonos-change',
+          trigger,
+          force,
           reason: 'last-sent-hash-match',
           groupId: snap.groupId,
           registeredTokens: matching.length,
@@ -147,7 +158,8 @@ async function main(): Promise<void> {
       {
         source: 'relay',
         action: 'apns-update',
-        trigger: 'sonos-change',
+        trigger,
+        force,
         groupId: snap.groupId,
         tokenCount: targets.length,
         sent: result.sent,
@@ -158,6 +170,25 @@ async function main(): Promise<void> {
       },
       'live_activity',
     );
+  }
+
+  sonos.on('change', async (
+    snap: SonosGroupSnapshot,
+    context?: SonosSnapshotChangeContext,
+  ) => {
+    if (!cs2Lighting.shouldDeferAlbumAmbience()) {
+      hueAmbience.receiveSnapshot(snap);
+    }
+
+    const trigger = context?.trigger ?? 'sonos-change';
+    const force = trigger === 'periodic-refresh';
+    if (force && !shouldForceLiveActivityCalibration(snap)) {
+      return;
+    }
+    await pushLiveActivitySnapshot(snap, trigger, {
+      force,
+      logNoTokens: trigger !== 'periodic-refresh',
+    });
   });
 
   // ---- HTTP -------------------------------------------------------------

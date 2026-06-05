@@ -42,6 +42,20 @@ test('track metadata extraction accepts raw DIDL strings', () => {
   );
 });
 
+test('track metadata extraction uses Sonos radio stream content for the current song', () => {
+  assert.deepEqual(
+    trackMetadataFromMetadata(
+      '<DIDL-Lite><item><dc:title>Apple Music Chill</dc:title><dc:creator>Unknown</dc:creator><upnp:album></upnp:album><r:streamContent>TYPE=SNG|TITLE thursday drive|ARTIST Middle Kids|ALBUM Faith Crisis Pt 1</r:streamContent><upnp:albumArtURI>/getaa?s=1&amp;u=x-sonosapi-radio%3astation</upnp:albumArtURI></item></DIDL-Lite>',
+    ),
+    {
+      title: 'thursday drive',
+      artist: 'Middle Kids',
+      album: 'Faith Crisis Pt 1',
+      albumArtUri: '/getaa?s=1&u=x-sonosapi-radio%3astation',
+    },
+  );
+});
+
 test('track metadata extraction accepts parsed Sonos Track metadata objects', () => {
   assert.deepEqual(
     trackMetadataFromMetadata({
@@ -153,6 +167,55 @@ test('bridge ignores stale snapshot refreshes that complete after a newer refres
   assert.deepEqual(bridge.current('192.168.50.25')?.trackTitle, 'Paused Song');
 });
 
+test('bridge labels periodic snapshot refreshes for Live Activity calibration pushes', async () => {
+  const bridge = new SonosBridge(pino({ enabled: false }));
+  let trigger: string | undefined;
+  const device = {
+    Host: '192.168.50.25',
+    Name: 'Office',
+    Uuid: 'office',
+    AVTransportService: {
+      GetTransportInfo: () => Promise.resolve({ CurrentTransportState: 'PLAYING' }),
+      GetPositionInfo: () => Promise.resolve(positionInfo('Blue Train')),
+    },
+  };
+
+  bridge.on('change', (_snapshot, context) => {
+    trigger = context?.trigger;
+  });
+
+  await (bridge as unknown as {
+    refreshSnapshot: (device: unknown, trigger: 'periodic-refresh') => Promise<void>;
+  }).refreshSnapshot(device, 'periodic-refresh');
+
+  assert.equal(trigger, 'periodic-refresh');
+});
+
+test('bridge snapshots grouped playback with the coordinator visible member count', async () => {
+  const bridge = new SonosBridge(pino({ enabled: false }));
+  const coordinator = playbackDevice({
+    Host: '192.168.50.25',
+    Name: 'Playroom',
+    Uuid: 'rincon-playroom',
+  });
+  coordinator.Coordinator = coordinator;
+  const member = playbackDevice({
+    Host: '192.168.50.26',
+    Name: 'Kitchen',
+    Uuid: 'rincon-kitchen',
+    Coordinator: coordinator,
+  });
+  (bridge as unknown as { manager: { devices: unknown[] } }).manager.devices = [coordinator, member];
+
+  await (bridge as unknown as {
+    refreshSnapshot: (device: unknown) => Promise<void>;
+  }).refreshSnapshot(coordinator);
+
+  const snapshot = bridge.current('192.168.50.25');
+  assert.equal(snapshot?.speakerName, 'Playroom');
+  assert.equal(snapshot?.groupMemberCount, 2);
+});
+
 function positionInfo(title: string): Record<string, string> {
   return {
     RelTime: '00:00:00',
@@ -168,4 +231,14 @@ function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
     resolve = innerResolve;
   });
   return { promise, resolve };
+}
+
+function playbackDevice(fields: Record<string, unknown>): Record<string, unknown> {
+  return {
+    AVTransportService: {
+      GetTransportInfo: () => Promise.resolve({ CurrentTransportState: 'PLAYING' }),
+      GetPositionInfo: () => Promise.resolve(positionInfo('Blue Train')),
+    },
+    ...fields,
+  };
 }
