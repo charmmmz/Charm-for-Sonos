@@ -1,149 +1,211 @@
 # Charm for Sonos
 
-> A personal iOS control surface for Sonos: Dynamic Island, Live Activities, Home Screen widgets, Apple Music HANDOFF, and optional NAS-backed updates.
+> **Charm Player** is a private iPhone companion for Sonos. It focuses on the
+> places where Sonos control should be faster: Home, Apple Music handoff,
+> widgets, Lock Screen, Dynamic Island, and optional NAS-backed background
+> updates.
 
-[![iOS 18+](https://img.shields.io/badge/iOS-18%2B-111111?style=flat-square&logo=apple)](#requirements)
-[![SwiftUI](https://img.shields.io/badge/SwiftUI-0A84FF?style=flat-square&logo=swift&logoColor=white)](#tech-stack)
-[![Sonos LAN + Cloud](https://img.shields.io/badge/Sonos-LAN%20%2B%20Cloud-000000?style=flat-square)](#architecture)
-[![NAS Relay](https://img.shields.io/badge/NAS%20Relay-Optional-3A7D44?style=flat-square)](#optional-live-activity-relay-nas--home-server)
+[![iOS 18.6+](https://img.shields.io/badge/iOS-18.6%2B-111111?style=flat-square&logo=apple)](#requirements)
+[![TestFlight Ready](https://img.shields.io/badge/TestFlight-Ready-0A84FF?style=flat-square&logo=appstore)](#testflight)
+[![Sonos Cloud Optional](https://img.shields.io/badge/Sonos%20Cloud-Optional-0A84FF?style=flat-square)](#setup-options)
+[![NAS Relay Optional](https://img.shields.io/badge/NAS%20Relay-Optional-3A7D44?style=flat-square)](#optional-nas-relay)
 
-Charm for Sonos fills a very specific gap: the official Sonos app is great for setup, but it does not expose Sonos playback as deeply into iOS system surfaces. The iOS app is named Charm Player, and it brings Sonos controls closer to where music already lives on an iPhone.
-
-## At A Glance
-
-| Area | What Charm for Sonos adds |
-| --- | --- |
-| iOS surfaces | Dynamic Island, Live Activity, Lock Screen controls, and Home Screen widgets |
-| Playback | Play/pause, skip, shuffle, repeat, volume, seek, queue edits, and speaker grouping |
-| Apple Music | HANDOFF from iPhone to Sonos, Sonos to iPhone, and queue-aware reverse handoff |
-| Network paths | Local LAN control first, Sonos Cloud fallback when available |
-| Background updates | Optional NAS relay sends APNs updates so Live Activities stay fresh |
-
-## Screenshots
-
-Screenshots will live here once added. Good slots to capture:
-
-- Home speaker cards with the mini-player
-- Apple Music HANDOFF control
-- Browse/search results
-- Dynamic Island and Lock Screen Live Activity
-- Settings with Sonos Cloud, Music Services, and NAS relay/agent options
+Charm Player is built for a home Sonos setup where the phone should feel like a
+real controller, not just a place to open another app. It keeps common actions
+close, makes Apple Music handoff deliberate, and can use a home relay when iOS
+would otherwise suspend the app.
 
 ## Highlights
 
-### Apple Music HANDOFF
+- Fast Sonos room control from a compact Home dashboard, with speaker cards,
+  playback controls, volume, grouping, queue access, artwork, and source state.
+- Apple Music feels native: browse library content through MusicKit, send Apple
+  Music share links into Charm Player, hand off playback between iPhone and
+  Sonos, and show animated album artwork when available.
+- Live Activity and Dynamic Island keep now playing visible, with Lock Screen
+  controls and optional NAS relay updates that stay fresh after the app is
+  suspended.
+- Hue Ambience syncs the room to the music, using album colors to drive mapped
+  Hue rooms, lights, or Entertainment Areas from the phone or the NAS relay.
 
-- Single Home-screen `HANDOFF` control above `UNGROUP`.
-- If the selected Sonos target is playing, HANDOFF moves Apple Music playback from Sonos back to the iPhone.
-- If Sonos is idle, paused, stopped, or unknown, HANDOFF moves the currently playing iPhone Apple Music track to the selected Sonos speaker or group.
-- Reverse handoff can rebuild the remaining Sonos queue in Apple Music when the queue items resolve to Apple Music store IDs.
-- Unsupported queue items, radio streams, and non-Apple-Music sources fail safely or are skipped with a clear toast.
+## Setup Options
 
-### Sonos Control Surfaces
+Sonos Cloud sign-in and `nas-relay` are independent. You can use the app without
+either one, but they unlock different parts of the experience.
 
-- Dynamic Island and Live Activity now playing views.
-- Home Screen widget with album art, track info, audio-quality hints, and AppIntent quick actions.
-- In-app Home dashboard for multiple speakers and groups.
-- Mini-player that follows the current selected Sonos target.
+**App only, same Wi-Fi**
 
-### Speaker And Queue Management
+- Best for basic local control.
+- Available: speaker discovery, play/pause, skip, volume, grouping, queue edits,
+  and cached widgets.
+- Limited: no Sonos Cloud browsing, no Apple Music-to-Sonos matching, and Live
+  Activities may stop refreshing after iOS suspends the app.
 
-- SSDP discovery and manual IP entry for local speakers.
-- Local-network grouping and ungrouping.
-- Drag speaker cards to group speakers; drop near the top or bottom edge to reorder cards.
-- Persisted Home speaker order via shared app-group storage.
-- Queue view, reorder, and edit over the local Sonos path.
+**Sonos Cloud signed in**
 
-### Remote And Background Support
+- Best for full music browsing and handoff.
+- Available: Cloud browse/search, linked services, Apple Music matching, Local
+  Service playback, and share extension playback.
+- Limited: background Live Activity updates still need the relay.
 
-- Sonos Cloud sign-in for remote control and cloud-powered music search/browse.
-- LAN-first command routing with Cloud fallback where Sonos exposes an equivalent operation.
-- Optional NAS relay for Live Activity push updates when the iOS app is suspended.
-- Optional FastAPI NAS agent for LLM-assisted relay control.
+**`nas-relay` only**
 
-## Architecture
+- Best for better background behavior at home.
+- Available: local control plus relay diagnostics, production APNs updates,
+  push-to-start, and background Hue Ambience.
+- Limited: no Cloud browse/search or Apple Music matching without Sonos Cloud.
 
-| Area | Role |
-| --- | --- |
-| `SonosWidget/` | Main SwiftUI app, Home UI, browse/search UI, `SonosManager`, handoff orchestration, speaker grouping, Live Activity lifecycle |
-| `Shared/` | App Group storage, LAN Sonos UPnP/SOAP, Sonos Cloud API, OAuth, `SonosControl`, Apple Music handoff helpers, relay client |
-| `TheWidget/` | WidgetKit timelines, Live Activity layouts, playback AppIntents |
-| `nas-relay/` | Optional Node.js relay: LAN Sonos UPnP events to APNs Live Activity pushes |
-| `nas-agent/` | Optional Python/FastAPI agent: authenticated HTTP tools that call relay `/internal/sonos/*` endpoints |
-| `docs/implementation-notes/` | Human-readable notes distilled from implementation plans and design decisions |
-| `docs/superpowers/` | Agent working specs/plans; useful as history, but not the primary docs surface |
+**Sonos Cloud + `nas-relay`**
 
-Control commands go through `SonosControl`, which routes to either:
+- Best home/TestFlight setup.
+- Available: full browsing, Apple Music transfer, share extension, fresh Live
+  Activities, diagnostics, and always-on Hue Ambience.
+- Limited: requires both Sonos account setup and a reachable home relay.
 
-- `LAN` - SOAP to speakers on port `1400` through `SonosAPI`
-- `Cloud` - Sonos Control API and content APIs through `SonosCloudAPI` after OAuth sign-in
+### What the relay changes
 
-The app probes reachability and can fall back from LAN to Cloud when you leave the home network. Operations with no Cloud equivalent, such as queue edits and LAN-only grouping shortcuts, surface a clear same-network requirement instead of pretending the operation succeeded.
+**Live Activity refresh**
 
-## Tech Stack
+- Without relay: local updates only while the app, widget, or system extension
+  can execute; state may go stale after suspension.
+- With relay: APNs updates keep the Lock Screen and Dynamic Island current, and
+  push-to-start can create a Live Activity after playback starts.
 
-- Swift / SwiftUI / Observation
-- ActivityKit for Live Activities and Dynamic Island
-- WidgetKit for Home Screen widgets
-- AppIntents for widget and Live Activity controls
-- MediaPlayer for Apple Music HANDOFF through the system Music player
-- App Group storage through `SharedStorage`
-- `BGAppRefresh` for periodic widget timeline nudges
-- SSDP discovery, Sonos LAN UPnP/SOAP, Sonos Cloud OAuth and APIs
-- Optional Express + TypeScript relay with `@svrooij/sonos` and `@parse/node-apn`
-- Optional FastAPI agent, deployable with the relay through `compose.yml`
+**Animated Apple Music artwork**
+
+- Without relay: uses only artwork the app can resolve locally while it is
+  active.
+- With relay: resolves Apple Music album URLs or artist/album metadata to
+  animated artwork URLs, caches results, and provides a NAS fallback for player
+  and album surfaces.
+
+**Artwork fallback**
+
+- Without relay: uses app and shared-container caches.
+- With relay: proxies and caches artwork URLs, and accepts app-provided artwork
+  hints for later snapshots.
+
+**Hue Ambience**
+
+- Without relay: phone-side control can stop when the app is suspended.
+- With relay: NAS-side ambience can keep running for active Sonos groups.
+
+**Diagnostics**
+
+- Without relay: mostly local logs and app-visible state.
+- With relay: relay health, APNs readiness, device logs, Hue runtime, and recent
+  Sonos snapshots are visible from the NAS path.
+
+In short:
+
+- Sign in to Sonos Cloud if you want music browsing, linked service playback, or
+  Apple Music handoff to Sonos.
+- Deploy `nas-relay` if you want Live Activities and Hue Ambience to keep
+  updating while Charm Player is not open, or if you want relay-backed animated
+  artwork lookup and diagnostics.
+- Use both if you want the complete experience.
+
+## Core Flows
+
+### Control Sonos
+
+Charm Player discovers Sonos speakers on the local network and presents them as
+room and group cards. The main controls cover playback, volume, grouping,
+ungrouping, queue browsing, queue edits, and saved room order.
+
+### Move Apple Music
+
+The `HANDOFF` action chooses the useful direction automatically:
+
+- If Sonos is playing, bring playback back to the iPhone.
+- If Sonos is idle or paused, send the current iPhone Apple Music item to Sonos.
+
+Apple Music browsing and the share extension are designed around the same idea:
+find music on the phone, then send it to the right Sonos room when the Sonos
+account and Apple Music service can be matched.
+
+### Keep iOS Surfaces Fresh
+
+Widgets, Live Activities, and Dynamic Island controls make the current room
+available outside the main app. Without the relay they use the latest app-known
+state. With `nas-relay`, the home server can continue forwarding updates through
+APNs after the app is suspended.
+
+### Light the Room
+
+Hue Ambience can map Sonos rooms to Hue rooms, lights, or Entertainment Areas.
+Phone-side ambience works while the app is active. Relay-side ambience can keep
+running in the background at home.
 
 ## Requirements
 
-- iOS 18+
-- A Sonos system on your account
-- Same-network access for LAN-only features such as queue mutation and grouping
-- Sonos Cloud developer credentials for sign-in, cloud search/browse, and remote paths
-- Apple Music permission for HANDOFF features
-- Apple Developer capabilities for ActivityKit and APNs if you use the optional relay
+- iOS 18.6 or later.
+- A Sonos system on the same network for local control.
+- Local Network permission on iPhone.
+- Optional: Sonos Cloud sign-in for browsing, linked services, and Apple Music
+  handoff.
+- Optional: Apple Music permission and an active Apple Music account for Apple
+  Music flows.
+- Optional: `nas-relay` for background Live Activity updates, animated artwork
+  lookup, diagnostics, and background Hue Ambience.
 
-## Setup
+## First Run
 
-1. Clone the repo.
-2. Open `SonosWidget.xcodeproj` in Xcode.
-3. Build and run on a physical device. Widgets and Live Activities are not fully represented on Simulator.
-4. Grant Local Network access when prompted so discovery and SOAP calls can reach your speakers.
-5. Configure Sonos Cloud sign-in:
-   - Register an integration at the [Sonos integration portal](https://integration.sonos.com).
-   - Copy `Config/SonosSecrets.example.xcconfig` to `Config/SonosSecrets.xcconfig`.
-   - Set `SONOS_OAUTH_CLIENT_ID`, `SONOS_OAUTH_CLIENT_SECRET`, and `SONOS_OAUTH_REDIRECT_URI`.
-   - Keep `SonosSecrets.xcconfig` private; it is gitignored for a reason.
+1. Install Charm Player from TestFlight or a trusted local build.
+2. Open the app once while connected to the same Wi-Fi as the Sonos system.
+3. Grant Local Network permission.
+4. Confirm the Home dashboard shows the expected rooms.
+5. Sign in to Sonos Cloud if you want browsing, Apple Music handoff, Local
+   Service playback, or share extension playback.
+6. Configure `nas-relay` only if you want background Live Activity updates,
+   push-to-start, animated artwork lookup, relay diagnostics, or background Hue
+   Ambience.
 
-> [!NOTE]
-> Apple Music HANDOFF requires iOS Media Library permission, a Sonos Cloud session, and Apple Music linked as a music service in the target Sonos household.
+## Optional NAS Relay
 
-## Optional: Live Activity Relay (NAS / Home Server)
+`nas-relay` is a home-server companion. It listens to Sonos state on the LAN and
+forwards selected updates to the iPhone through APNs.
 
-When the iOS app is not running, Live Activities only update if the system delivers push updates. The `nas-relay/` service subscribes to Sonos UPnP events on your LAN and forwards Live Activity pushes through APNs.
+Use it when you want:
 
-- Full design, environment variables, Docker/Portainer flow, and API docs: [nas-relay/README.md](nas-relay/README.md)
-- The iOS app stores a relay base URL in App Group settings.
-- `RelayManager` probes health and registers push tokens when a Live Activity uses the relay path.
+- Live Activities to stay current while Charm Player is not open.
+- Relay-led push-to-start for Live Activities.
+- Relay-backed animated Apple Music artwork lookup and caching.
+- Background Hue Ambience.
+- Relay health, APNs status, and remote diagnostic logs.
 
-## Optional: Relay + LLM Agent Stack
+Quick start:
 
-Run both `nas-relay` and `nas-agent` with host networking:
+1. Copy [`.env.stack.example`](.env.stack.example) to `.env`.
+2. Set the internal token, optional agent token, and APNs values.
+3. Leave `SONOS_SEED_IP` blank unless multicast discovery is blocked.
+4. Run `docker compose up -d --build`.
 
-1. Copy [`.env.stack.example`](.env.stack.example) to `.env` at the repo root. Do not commit `.env`.
-2. Set `INTERNAL_API_TOKEN`, `SONOS_SEED_IP`, `OPENAI_API_KEY`, `AGENT_USER_TOKEN`, and APNs variables as needed.
-3. Run `docker compose up -d --build`.
+Full relay setup lives in [nas-relay/README.md](nas-relay/README.md).
 
-The agent listens on `AGENT_PORT`, defaulting to `8790`. In the app, open Settings -> NAS Agent, enter that URL, and use the same `AGENT_USER_TOKEN`.
+For TestFlight and App Store builds, the relay should use production APNs. Local
+debug builds installed from Xcode use APNs sandbox tokens.
 
-## Project Docs
+## TestFlight
 
-Implementation notes are the canonical place for feature-level design decisions after a plan has turned into code:
+Current first TestFlight build: `1.0 (1)`.
 
-- [Apple Music HANDOFF](docs/implementation-notes/apple-music-handoff.md)
-- [Home speaker ordering](docs/implementation-notes/home-speaker-ordering.md)
+What to test:
 
-Working plans under `docs/superpowers/plans/` are agent execution notes. Before new plans are committed, distill them into human-readable notes under `docs/implementation-notes/` so the repo keeps the useful decisions without the temporary scaffolding.
+- First launch, Local Network permission, and room discovery.
+- Playback controls: play/pause, skip, seek, volume, shuffle, repeat.
+- Grouping, ungrouping, queue viewing, and queue edits.
+- Sonos Cloud sign-in, browse/search, and linked service playback.
+- Apple Music handoff from iPhone to Sonos and back.
+- `Play in Charm Player` from Apple Music share sheet.
+- Widgets, Live Activity, Dynamic Island, and relay-backed refreshes.
+- Hue Ambience mapping and background behavior if the relay is configured.
 
-## License
+Before uploading another TestFlight build, increase the build number if App
+Store Connect already has the same version/build pair.
 
-This is a personal project. Feel free to reference or learn from the code.
+## Private Project Note
+
+This README is written for testers, daily use, and operating the private home
+setup. Internal maintainer notes are kept separately and are not the focus of
+this document.
